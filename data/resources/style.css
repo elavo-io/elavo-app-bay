@@ -1,0 +1,208 @@
+/* App Bay. Colors come from the GTK theme. Shape and spacing are ours. */
+
+.settings-sidebar {
+  background-color: alpha(currentColor, 0.04);
+}
+
+headerbar.settings-sidebar-bar {
+  background-color: alpha(currentColor, 0.04);
+  background-image: none;
+  border: none;
+  box-shadow: none;
+}
+
+.settings-content-header {
+  padding: 8px;
+  background-color: @theme_bg_color;
+}
+
+.settings-nav {
+  border-radius: 999px;
+  background-color: alpha(currentColor, 0.14);
+}
+
+.settings-nav > button {
+  min-width: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.settings-nav > button:first-child {
+  padding-left: 2px;
+  border-radius: 999px 0 0 999px;
+}
+
+.settings-nav > button:last-child {
+  padding-right: 2px;
+  border-radius: 0 999px 999px 0;
+}
+
+.settings-nav > button image {
+  margin: 0;
+}
+
+.settings-nav > button:hover {
+  background-color: alpha(currentColor, 0.06);
+}
+
+.settings-nav > button:disabled,
+.settings-nav > button:disabled:hover {
+  opacity: 1;
+  color: @theme_fg_color;
+  background: none;
+}
+
+.settings-nav > button:disabled image {
+  -gtk-icon-filter: opacity(0.58);
+}
+
+.settings-nav-rule {
+  min-width: 1px;
+  background-color: alpha(currentColor, 0.55);
+  margin-top: 7px;
+  margin-bottom: 7px;
+}
+
+.pane-title {
+  font-weight: bold;
+  font-size: 17px;
+}
+
+.settings-sidebar entry.search {
+  margin: 12px 10px 8px;
+}
+
+.bay-side list {
+  background: transparent;
+  padding: 0 8px 8px;
+}
+
+.bay-side row {
+  border-radius: 8px;
+  padding: 4px 8px;
+  min-height: 28px;
+}
+
+.bay-side row:selected {
+  background-color: alpha(currentColor, 0.1);
+  color: inherit;
+}
+
+.bay-side image {
+  color: var(--accent-bg-color, @accent_bg_color);
+}
+
+.bay-side row:selected image {
+  color: var(--accent-bg-color, @accent_bg_color);
+}
+
+.count-badge {
+  border-radius: 999px;
+  padding: 0 7px;
+  min-width: 1.4em;
+  font-size: 11px;
+  background-color: alpha(currentColor, 0.12);
+}
+
+.bay-page {
+  padding: 6px 28px 36px;
+}
+
+.bay-title {
+  font-size: 28px;
+  font-weight: bold;
+}
+
+.bay-section {
+  margin-top: 8px;
+  font-size: 20px;
+  font-weight: bold;
+}
+
+.bay-kicker {
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.bay-hero-title {
+  font-size: 26px;
+  font-weight: bold;
+}
+
+.bay-card-title {
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.bay-subtitle {
+  opacity: 0.85;
+}
+
+.bay-app-name {
+  font-weight: bold;
+}
+
+.bay-rank {
+  min-width: 1.4em;
+  opacity: 0.7;
+}
+
+.story-hero,
+.story-card {
+  border-radius: 18px;
+  padding: 18px;
+  background-color: alpha(currentColor, 0.06);
+}
+
+.story-tinted,
+.story-tinted label {
+  color: white;
+}
+
+.story-art {
+  border-radius: 12px;
+}
+
+button.story-button {
+  padding: 0;
+  border-radius: 18px;
+}
+
+button.pill {
+  border-radius: 999px;
+  padding: 4px 16px;
+  min-width: 72px;
+  min-height: 28px;
+  background-color: alpha(currentColor, 0.1);
+}
+
+button.pill:hover {
+  background-color: alpha(currentColor, 0.16);
+}
+
+button.linkish {
+  color: var(--accent-bg-color, @accent_bg_color);
+}
+
+button.category-row {
+  border-radius: 0;
+  padding: 12px 4px;
+  border-bottom: 1px solid alpha(currentColor, 0.12);
+}
+
+.bay-icon {
+  border-radius: 12px;
+}
+
+.update-card {
+  padding: 8px 0 12px;
+}
+
+.bay-row {
+  padding: 6px 0;
+}

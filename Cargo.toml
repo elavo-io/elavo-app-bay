@@ -1,0 +1,25 @@
+[package]
+name = "elavo-app-bay"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/elavo-io/elavo-app-bay"
+description = "App Bay, the Elavo catalog of Flatpaks and AppImages"
+
+[[bin]]
+name = "elavo-app-bay"
+path = "src/main.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+soup3 = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[build-dependencies]
+glib-build-tools = "0.22"
+
+[profile.release]
+lto = "thin"
+strip = true

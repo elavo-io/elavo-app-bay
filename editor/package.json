@@ -1,0 +1,15 @@
+{
+  "name": "elavo-feed-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Writes the App Bay catalog JSON.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "vite"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "vite": "^6.0.0"
+  }
+}

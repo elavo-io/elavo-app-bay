@@ -1,0 +1,7 @@
+src/app.rs
+src/categories.rs
+src/i18n.rs
+src/nav.rs
+src/pages.rs
+src/widgets.rs
+src/window.rs

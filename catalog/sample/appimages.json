@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "apps": [
+    {
+      "id": "sample-player",
+      "name": "Sample Player",
+      "summary": "A stand-in AppImage so the catalog has a curated row.",
+      "developer": "Elavo",
+      "categories": ["music", "entertainment"],
+      "icon": "",
+      "download": "https://elavo.io/app-bay/samples/sample-player.AppImage",
+      "version": "0.1.0",
+      "homepage": "https://elavo.io"
+    }
+  ]
+}

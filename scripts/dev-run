@@ -1,0 +1,23 @@
+#!/bin/sh
+# Build App Bay in the toolbox and run it on the host session.
+# The sample catalog is used unless ELAVO_APP_BAY_CATALOG is already set.
+set -eu
+
+cd "$(dirname "$0")/.."
+toolbox_name="${ELAVO_TOOLBOX:-elavo-dev}"
+
+toolbox run -c "${toolbox_name}" cargo build
+
+if pkill -x elavo-app-bay 2>/dev/null; then
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -x elavo-app-bay >/dev/null || break
+        sleep 0.3
+    done
+fi
+
+if [ -z "${ELAVO_APP_BAY_CATALOG:-}" ]; then
+    ELAVO_APP_BAY_CATALOG=$PWD/catalog/sample
+    export ELAVO_APP_BAY_CATALOG
+fi
+
+exec target/debug/elavo-app-bay "$@"

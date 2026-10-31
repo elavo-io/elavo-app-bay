@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.elavo.AppBay</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>App Bay</name>
+  <summary>Flatpaks from Flathub, and curated AppImages</summary>
+  <description>
+    <p>
+      Discover stories and featured apps, browse categories, and install
+      from Flathub. AppImages and extra Flatpak refs come from a catalog
+      Elavo hosts.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.elavo.AppBay.desktop</launchable>
+  <url type="homepage">https://github.com/elavo-io/elavo-app-bay</url>
+  <developer id="io.elavo">
+    <name>Elavo contributors</name>
+  </developer>
+  <provides>
+    <binary>elavo-app-bay</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-10-31"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

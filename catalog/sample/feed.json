@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "stories": [
+    {
+      "id": "draw-freely",
+      "kicker": "Create",
+      "title": "Draw freely",
+      "subtitle": "Illustration, photo, and layout tools from Flathub.",
+      "body": "GIMP, Inkscape, and Krita are on Flathub. App Bay features them here, and Flathub's own ranking fills in the rest of the page.\n\nOpen a story to read it, then get the app.",
+      "image": "https://dl.flathub.org/repo/appstream/x86_64/icons/128x128/org.gimp.GIMP.png",
+      "color": "#3b2f63",
+      "date": "2026-10-31",
+      "style": "hero",
+      "surfaces": ["discover", "create"],
+      "apps": ["org.gimp.GIMP", "org.inkscape.Inkscape", "org.kde.krita"]
+    },
+    {
+      "id": "write-and-plan",
+      "kicker": "Work",
+      "title": "Write and plan",
+      "subtitle": "Documents, notes, and the tools around them.",
+      "body": "A featured card on Discover and on Work.",
+      "image": "",
+      "color": "#1d3a4a",
+      "date": "2026-10-31",
+      "style": "card",
+      "surfaces": ["discover", "work"],
+      "apps": ["org.libreoffice.LibreOffice"]
+    },
+    {
+      "id": "play-something",
+      "kicker": "Play",
+      "title": "Play something",
+      "subtitle": "Games stay on Flathub's ranking. This card is the feature.",
+      "body": "The ranked list under this card is Flathub's, in Flathub's order.",
+      "image": "",
+      "color": "#6b2d4a",
+      "date": "2026-10-31",
+      "style": "card",
+      "surfaces": ["discover", "play"],
+      "apps": []
+    }
+  ],
+  "rails": [
+    {
+      "id": "editors-choice",
+      "title": "Editors' Choice",
+      "surface": "categories",
+      "apps": ["org.gimp.GIMP", "org.inkscape.Inkscape", "org.blender.Blender", "org.kde.krita"]
+    },
+    {
+      "id": "create-picks",
+      "title": "From the catalog",
+      "surface": "create",
+      "apps": ["appimage:sample-player"]
+    }
+  ]
+}

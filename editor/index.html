@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>App Bay catalog</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <strong>App Bay catalog</strong>
+    <button id="open" type="button">Open folder</button>
+    <button id="save" type="button">Save</button>
+    <span id="dir"></span>
+  </header>
+  <nav>
+    <button type="button" data-section="stories">Stories</button>
+    <button type="button" data-section="rails">Rails</button>
+    <button type="button" data-section="appimages">AppImages</button>
+    <button type="button" data-section="flatpakrefs">Flatpak refs</button>
+  </nav>
+  <div id="list"></div>
+  <form id="form"></form>
+  <p id="status"></p>
+  <script src="app.js"></script>
+</body>
+</html>

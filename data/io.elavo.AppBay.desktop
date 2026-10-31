@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=App Bay
+GenericName=Apps
+Comment=Flatpaks from Flathub, and curated AppImages
+Exec=elavo-app-bay
+Icon=system-software-install
+Terminal=false
+Categories=GTK;System;
+Keywords=apps;software;flatpak;appimage;install;flathub;
+StartupNotify=true
