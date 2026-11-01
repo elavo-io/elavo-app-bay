@@ -1,0 +1,20 @@
+#!/bin/sh
+# Install a release build. Run `cargo build --release` first.
+# Honors DESTDIR and PREFIX (default /usr). The image build calls this.
+set -eu
+
+cd "$(dirname "$0")/.."
+prefix="${PREFIX:-/usr}"
+dest="${DESTDIR:-}"
+id=io.elavo.AppBay
+
+install -Dm755 target/release/elavo-app-bay "${dest}${prefix}/bin/elavo-app-bay"
+install -Dm644 "data/${id}.desktop" "${dest}${prefix}/share/applications/${id}.desktop"
+install -Dm644 "data/${id}.metainfo.xml" "${dest}${prefix}/share/metainfo/${id}.metainfo.xml"
+
+for po in po/*.po; do
+    [ -e "${po}" ] || continue
+    lang="$(basename "${po}" .po)"
+    install -d "${dest}${prefix}/share/locale/${lang}/LC_MESSAGES"
+    msgfmt -o "${dest}${prefix}/share/locale/${lang}/LC_MESSAGES/${id}.mo" "${po}"
+done
