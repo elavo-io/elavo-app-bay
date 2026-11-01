@@ -25,6 +25,7 @@ pub fn run() -> glib::ExitCode {
         .application_id(crate::APP_ID)
         .build();
     app.connect_startup(|app| {
+        follow_color_scheme();
         load_css();
         app.set_menubar(Some(&menubar()));
     });
@@ -59,6 +60,46 @@ fn activate(app: &gtk::Application) {
     });
 }
 
+/// `org.gnome.desktop.interface` `color-scheme`. Anything else is light,
+/// including an empty value and `prefer-light`.
+fn scheme_is_dark(value: &str) -> bool {
+    value == "prefer-dark"
+}
+
+/// Load the dark theme sheet while the color scheme is dark, and switch
+/// when it changes. GTK keeps the theme name `Elavo` and reads
+/// `gtk-dark.css` instead of `gtk.css`. The settings object is kept so the
+/// signal stays connected.
+fn follow_color_scheme() {
+    let Some(source) = gio::SettingsSchemaSource::default() else {
+        return;
+    };
+    let Some(schema) = source.lookup("org.gnome.desktop.interface", true) else {
+        return;
+    };
+    if !schema.has_key("color-scheme") {
+        return;
+    }
+    let desktop = gio::Settings::new("org.gnome.desktop.interface");
+    let apply = {
+        let desktop = desktop.clone();
+        move || {
+            let Some(settings) = gtk::Settings::default() else {
+                return;
+            };
+            settings.set_gtk_application_prefer_dark_theme(scheme_is_dark(
+                desktop.string("color-scheme").as_str(),
+            ));
+        }
+    };
+    apply();
+    desktop.connect_changed(Some("color-scheme"), move |_, _| apply());
+    thread_local! {
+        static HELD: RefCell<Option<gio::Settings>> = const { RefCell::new(None) };
+    }
+    HELD.with(|slot| slot.replace(Some(desktop)));
+}
+
 fn load_css() {
     let Some(display) = gdk::Display::default() else {
         return;
@@ -78,4 +119,17 @@ fn menubar() -> gio::Menu {
     view.append(Some(&tr("Discover")), Some("app.discover"));
     menu.append_section(None, &view);
     menu
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scheme_is_dark;
+
+    #[test]
+    fn only_prefer_dark_selects_the_dark_sheet() {
+        assert!(scheme_is_dark("prefer-dark"));
+        assert!(!scheme_is_dark("prefer-light"));
+        assert!(!scheme_is_dark("default"));
+        assert!(!scheme_is_dark(""));
+    }
 }
