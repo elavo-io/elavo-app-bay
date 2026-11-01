@@ -176,6 +176,12 @@ impl Window {
         });
         this.bind();
         this.show(Route::Discover, false);
+        let weak = Rc::downgrade(&this);
+        crate::context::on_installed_change(move || {
+            if let Some(window) = weak.upgrade() {
+                window.refresh_badge();
+            }
+        });
         this
     }
 

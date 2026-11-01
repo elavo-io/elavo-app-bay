@@ -7,7 +7,12 @@ use crate::model::{AppId, Brief};
 use crate::text::{self, Permission};
 
 const BASE: &str = "https://flathub.org/api/v2";
-const RANK_TTL: u64 = 3 * 60 * 60;
+// Popular, New, and category lists. Monthly install counts move slowly,
+// and a new app is worth picking up a couple of times a day.
+const RANK_TTL: u64 = 12 * 60 * 60;
+// A query already run. A query App Bay has never seen still goes to Flathub.
+const SEARCH_TTL: u64 = 12 * 60 * 60;
+// Descriptions and screenshots change when an app ships an update.
 const DETAIL_TTL: u64 = 24 * 60 * 60;
 
 #[derive(Clone, Debug)]
@@ -81,24 +86,81 @@ fn text_field(value: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+pub fn stored_popular(http: &Http) -> Option<Vec<Hit>> {
+    stored_ranking(http, &popular_url())
+}
+
+pub fn popular_fresh(http: &Http) -> bool {
+    http.fresh("GET", &popular_url(), None, RANK_TTL)
+}
+
 pub async fn popular(http: &Http) -> Result<Vec<Hit>, String> {
-    ranking(http, &format!("{BASE}/collection/popular")).await
+    ranking(http, &popular_url()).await
+}
+
+pub fn stored_recently_added(http: &Http) -> Option<Vec<Hit>> {
+    stored_ranking(http, &recent_url())
+}
+
+pub fn recently_added_fresh(http: &Http) -> bool {
+    http.fresh("GET", &recent_url(), None, RANK_TTL)
 }
 
 pub async fn recently_added(http: &Http) -> Result<Vec<Hit>, String> {
-    ranking(http, &format!("{BASE}/collection/recently-added")).await
+    ranking(http, &recent_url()).await
+}
+
+pub fn stored_category(http: &Http, slug: &str) -> Option<Vec<Hit>> {
+    stored_ranking(http, &category_url(slug))
+}
+
+pub fn category_fresh(http: &Http, slug: &str) -> bool {
+    http.fresh("GET", &category_url(slug), None, RANK_TTL)
 }
 
 pub async fn category(http: &Http, slug: &str) -> Result<Vec<Hit>, String> {
-    ranking(http, &format!("{BASE}/collection/category/{slug}")).await
+    ranking(http, &category_url(slug)).await
+}
+
+fn popular_url() -> String {
+    format!("{BASE}/collection/popular")
+}
+
+fn recent_url() -> String {
+    format!("{BASE}/collection/recently-added")
+}
+
+fn category_url(slug: &str) -> String {
+    format!("{BASE}/collection/category/{slug}")
 }
 
 /// Merge Flathub's per-category rankings, keeping the higher install count
 /// when an app is in more than one.
-pub async fn merged(http: &Http, slugs: &[&str]) -> Result<Vec<Hit>, String> {
-    let mut best: Vec<Hit> = Vec::new();
+/// Last saved rankings for every slug, merged. Missing one means no copy yet.
+pub fn stored_merged(http: &Http, slugs: &[&str]) -> Option<Vec<Hit>> {
+    let mut groups = Vec::new();
     for slug in slugs {
-        for hit in category(http, slug).await? {
+        groups.push(stored_category(http, slug)?);
+    }
+    Some(merge(groups))
+}
+
+pub fn merged_fresh(http: &Http, slugs: &[&str]) -> bool {
+    slugs.iter().all(|slug| category_fresh(http, slug))
+}
+
+pub async fn merged(http: &Http, slugs: &[&str]) -> Result<Vec<Hit>, String> {
+    let mut groups = Vec::new();
+    for slug in slugs {
+        groups.push(category(http, slug).await?);
+    }
+    Ok(merge(groups))
+}
+
+fn merge(groups: Vec<Vec<Hit>>) -> Vec<Hit> {
+    let mut best: Vec<Hit> = Vec::new();
+    for group in groups {
+        for hit in group {
             if let Some(existing) = best.iter_mut().find(|h| h.app_id == hit.app_id) {
                 if hit.installs > existing.installs {
                     *existing = hit;
@@ -109,14 +171,50 @@ pub async fn merged(http: &Http, slugs: &[&str]) -> Result<Vec<Hit>, String> {
         }
     }
     best.sort_by(|a, b| b.installs.cmp(&a.installs).then(a.name.cmp(&b.name)));
-    Ok(best)
+    best
+}
+
+pub fn stored_search(http: &Http, query: &str) -> Option<Vec<Hit>> {
+    stored_hits(http, "POST", &search_url(), Some(&search_body(query)))
+}
+
+pub fn search_fresh(http: &Http, query: &str) -> bool {
+    http.fresh("POST", &search_url(), Some(&search_body(query)), SEARCH_TTL)
 }
 
 pub async fn search(http: &Http, query: &str) -> Result<Vec<Hit>, String> {
-    let body = serde_json::json!({ "query": query }).to_string();
-    let bytes = http.post(&format!("{BASE}/search"), &body, 10 * 60).await?;
+    let body = search_body(query);
+    let bytes = http.post(&search_url(), &body, SEARCH_TTL).await?;
     let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     Ok(parse_hits(&value))
+}
+
+fn search_url() -> String {
+    format!("{BASE}/search")
+}
+
+fn search_body(query: &str) -> String {
+    serde_json::json!({ "query": query }).to_string()
+}
+
+pub fn detail_fresh(http: &Http, app_id: &str) -> bool {
+    http.fresh(
+        "GET",
+        &format!("{BASE}/appstream/{app_id}"),
+        None,
+        DETAIL_TTL,
+    ) && http.fresh("GET", &format!("{BASE}/summary/{app_id}"), None, DETAIL_TTL)
+}
+
+fn stored_ranking(http: &Http, url: &str) -> Option<Vec<Hit>> {
+    stored_hits(http, "GET", url, None)
+}
+
+fn stored_hits(http: &Http, method: &str, url: &str, body: Option<&str>) -> Option<Vec<Hit>> {
+    let bytes = http.stored(method, url, body)?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    value.get("hits")?;
+    Some(parse_hits(&value))
 }
 
 async fn ranking(http: &Http, url: &str) -> Result<Vec<Hit>, String> {

@@ -9,6 +9,23 @@ use crate::http::Http;
 use crate::installed::Installed;
 use crate::model::{AppId, Offer};
 
+thread_local! {
+    static ON_INSTALLED: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// The window registers this so the Updates badge follows a finished check.
+pub fn on_installed_change(hook: impl Fn() + 'static) {
+    ON_INSTALLED.with(|slot| *slot.borrow_mut() = Some(Rc::new(hook)));
+}
+
+fn notify_installed() {
+    ON_INSTALLED.with(|slot| {
+        if let Some(hook) = slot.borrow().clone() {
+            hook();
+        }
+    });
+}
+
 pub struct Ctx {
     pub catalog: RefCell<Catalog>,
     pub http: Http,
@@ -20,7 +37,7 @@ impl Ctx {
         Rc::new(Self {
             catalog: RefCell::new(Catalog::from_env()),
             http: Http::new(),
-            installed: RefCell::new(Installed::default()),
+            installed: RefCell::new(Installed::read_index()),
         })
     }
 
@@ -41,8 +58,29 @@ impl Ctx {
         }
     }
 
+    /// Reread what is installed on this computer. Does not ask remotes
+    /// about updates; that wait belongs on the Updates page.
     pub async fn refresh_installed(&self) {
-        *self.installed.borrow_mut() = Installed::load().await;
+        let mut next = self.installed.borrow().clone();
+        let before = next.revision();
+        next.reload_local().await;
+        if next.revision() == before {
+            return;
+        }
+        next.save();
+        *self.installed.borrow_mut() = next;
+        notify_installed();
+    }
+
+    /// Ask the Flatpak remotes which installed apps have a newer build.
+    pub async fn refresh_updates(&self) -> Result<(), String> {
+        let mut next = self.installed.borrow().clone();
+        next.reload_local().await;
+        next.reload_updates().await?;
+        next.save();
+        *self.installed.borrow_mut() = next;
+        notify_installed();
+        Ok(())
     }
 
     pub fn offer(&self, id: &AppId, version: &str) -> Offer {

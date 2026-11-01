@@ -77,6 +77,29 @@ pub fn see_all() -> gtk::Button {
         .build()
 }
 
+/// A spinner and a line, shown while a list is still coming in.
+pub fn loading(text: &str) -> gtk::Box {
+    let row = gtk::Box::builder()
+        .spacing(10)
+        .halign(gtk::Align::Start)
+        .margin_top(8)
+        .margin_bottom(8)
+        .build();
+    let spinner = gtk::Spinner::builder()
+        .spinning(true)
+        .width_request(16)
+        .height_request(16)
+        .build();
+    row.append(&spinner);
+    row.append(
+        &gtk::Label::builder()
+            .label(text)
+            .css_classes(["caption"])
+            .build(),
+    );
+    row
+}
+
 pub fn note(text: &str) -> gtk::Label {
     gtk::Label::builder()
         .label(text)

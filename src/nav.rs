@@ -125,14 +125,14 @@ impl Chart {
 
     pub fn title(&self) -> String {
         match self {
-            Self::Popular => tr("Popular"),
-            Self::New => tr("New Apps"),
+            Self::Popular => tr("Popular on Flathub"),
+            Self::New => tr("New Apps on Flathub"),
             Self::Hub(id) => match id.as_str() {
                 "create" => tr("Create"),
                 "work" => tr("Work"),
                 "play" => tr("Play"),
                 "develop" => tr("Develop"),
-                _ => tr("Popular"),
+                _ => tr("Popular on Flathub"),
             },
             Self::Category(id) => categories::title(id),
         }

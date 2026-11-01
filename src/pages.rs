@@ -39,34 +39,66 @@ fn discover(ctx: &Rc<Ctx>, nav: &Nav) -> Page {
     widgets::page(&tr("Discover"), None, |column| {
         let catalog = ctx.catalog.borrow().clone();
         append_stories(column, &catalog, "discover", &nav);
-        let slot = gtk::Box::builder()
+        let lists = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
             .build();
-        column.append(&slot);
+        let popular = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let newest = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let rails = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        lists.append(&popular);
+        lists.append(&newest);
+        lists.append(&rails);
+        column.append(&lists);
         widgets::flush_pictures(column, &ctx.http);
         let ctx = ctx.clone();
         let nav = nav.clone();
         glib::spawn_future_local(async move {
-            append_ranking(
-                &slot,
+            let popular_saved = flathub::stored_popular(&ctx.http);
+            let newest_saved = flathub::stored_recently_added(&ctx.http);
+            let refresh_popular = begin_ranking(
+                &popular,
                 &ctx,
                 &nav,
-                &tr("Popular"),
-                flathub::popular(&ctx.http).await,
+                &tr("Popular on Flathub"),
                 Route::Chart(Chart::Popular),
-            )
-            .await;
-            append_ranking(
-                &slot,
+                popular_saved.clone(),
+                flathub::popular_fresh(&ctx.http),
+            );
+            let refresh_newest = begin_ranking(
+                &newest,
                 &ctx,
                 &nav,
-                &tr("New Apps"),
-                flathub::recently_added(&ctx.http).await,
+                &tr("New Apps on Flathub"),
                 Route::Chart(Chart::New),
-            )
-            .await;
-            append_rails(&slot, &ctx, &nav, "discover").await;
+                newest_saved.clone(),
+                flathub::recently_added_fresh(&ctx.http),
+            );
+            if refresh_popular {
+                finish_ranking(
+                    &popular,
+                    &ctx,
+                    &nav,
+                    &tr("Popular on Flathub"),
+                    Route::Chart(Chart::Popular),
+                    popular_saved,
+                    flathub::popular(&ctx.http),
+                )
+                .await;
+            }
+            if refresh_newest {
+                finish_ranking(
+                    &newest,
+                    &ctx,
+                    &nav,
+                    &tr("New Apps on Flathub"),
+                    Route::Chart(Chart::New),
+                    newest_saved,
+                    flathub::recently_added(&ctx.http),
+                )
+                .await;
+            }
+            append_rails(&rails, &ctx, &nav, "discover").await;
         });
     })
 }
@@ -78,27 +110,34 @@ fn hub(ctx: &Rc<Ctx>, nav: &Nav, id: &'static str, title: &str) -> Page {
     widgets::page(title, None, move |column| {
         let catalog = ctx.catalog.borrow().clone();
         append_stories(column, &catalog, id, &nav);
-        let slot = gtk::Box::builder()
+        let lists = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
             .build();
-        column.append(&slot);
+        let popular = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let rails = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        lists.append(&popular);
+        lists.append(&rails);
+        column.append(&lists);
         widgets::flush_pictures(column, &ctx.http);
         let ctx = ctx.clone();
         let nav = nav.clone();
         glib::spawn_future_local(async move {
             let slugs = categories::hub_slugs(&hub_id);
-            let hits = flathub::merged(&ctx.http, slugs).await;
-            append_ranking(
-                &slot,
+            show_ranking(
+                &popular,
                 &ctx,
                 &nav,
-                &tr("Popular"),
-                hits,
+                &tr("Popular on Flathub"),
                 Route::Chart(Chart::Hub(hub_id.clone())),
+                SavedList {
+                    stored: flathub::stored_merged(&ctx.http, slugs),
+                    fresh: flathub::merged_fresh(&ctx.http, slugs),
+                    fetch: flathub::merged(&ctx.http, slugs),
+                },
             )
             .await;
-            append_rails(&slot, &ctx, &nav, &hub_id).await;
+            append_rails(&rails, &ctx, &nav, &hub_id).await;
         });
     })
 }
@@ -155,30 +194,52 @@ fn category_page(ctx: &Rc<Ctx>, nav: &Nav, id: &str) -> Page {
             column.append(&block);
             widgets::flush_pictures(&block, &ctx.http);
         }
-        let slot = gtk::Box::builder()
+        let lists = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(18)
             .build();
-        column.append(&slot);
+        let rails = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let popular = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        lists.append(&rails);
+        lists.append(&popular);
+        column.append(&lists);
         widgets::flush_pictures(column, &ctx.http);
         let ctx = ctx.clone();
         let nav = nav.clone();
         let id = id.clone();
         glib::spawn_future_local(async move {
-            append_rails(&slot, &ctx, &nav, &id).await;
-            let hits = match categories::get(&id).and_then(|c| c.flathub) {
-                Some(slug) => flathub::category(&ctx.http, slug).await,
-                None => flathub::search(&ctx.http, &categories::title(&id)).await,
-            };
-            append_ranking(
-                &slot,
-                &ctx,
-                &nav,
-                &tr("Popular"),
-                hits,
-                Route::Chart(Chart::Category(id)),
-            )
-            .await;
+            let route = Route::Chart(Chart::Category(id.clone()));
+            if let Some(slug) = categories::get(&id).and_then(|c| c.flathub) {
+                show_ranking(
+                    &popular,
+                    &ctx,
+                    &nav,
+                    &tr("Popular on Flathub"),
+                    route,
+                    SavedList {
+                        stored: flathub::stored_category(&ctx.http, slug),
+                        fresh: flathub::category_fresh(&ctx.http, slug),
+                        fetch: flathub::category(&ctx.http, slug),
+                    },
+                )
+                .await;
+            } else {
+                let query = categories::title(&id);
+                show_ranking(
+                    &popular,
+                    &ctx,
+                    &nav,
+                    &tr("Popular on Flathub"),
+                    route,
+                    SavedList {
+                        stored: flathub::stored_search(&ctx.http, &query),
+                        fresh: flathub::search_fresh(&ctx.http, &query),
+                        fetch: flathub::search(&ctx.http, &query),
+                    },
+                )
+                .await;
+            }
+            append_rails(&rails, &ctx, &nav, &id).await;
         });
     })
 }
@@ -195,22 +256,66 @@ fn chart_page(ctx: &Rc<Ctx>, nav: &Nav, chart: &Chart) -> Page {
             .build();
         column.append(&slot);
         glib::spawn_future_local(async move {
-            let result = match &chart {
-                Chart::Popular => flathub::popular(&ctx.http).await,
-                Chart::New => flathub::recently_added(&ctx.http).await,
-                Chart::Hub(id) => flathub::merged(&ctx.http, categories::hub_slugs(id)).await,
-                Chart::Category(id) => match categories::get(id).and_then(|c| c.flathub) {
-                    Some(slug) => flathub::category(&ctx.http, slug).await,
-                    None => flathub::search(&ctx.http, &categories::title(id)).await,
-                },
-            };
-            match result {
-                Ok(hits) => {
-                    let block = hit_list(&ctx, &nav, &hits, 60, true);
-                    slot.append(&block);
-                    widgets::flush_pictures(&block, &ctx.http);
+            match &chart {
+                Chart::Popular => {
+                    show_chart(
+                        &slot,
+                        &ctx,
+                        &nav,
+                        flathub::stored_popular(&ctx.http),
+                        flathub::popular_fresh(&ctx.http),
+                        flathub::popular(&ctx.http),
+                    )
+                    .await;
                 }
-                Err(err) => slot.append(&widgets::note(&err)),
+                Chart::New => {
+                    show_chart(
+                        &slot,
+                        &ctx,
+                        &nav,
+                        flathub::stored_recently_added(&ctx.http),
+                        flathub::recently_added_fresh(&ctx.http),
+                        flathub::recently_added(&ctx.http),
+                    )
+                    .await;
+                }
+                Chart::Hub(id) => {
+                    let slugs = categories::hub_slugs(id);
+                    show_chart(
+                        &slot,
+                        &ctx,
+                        &nav,
+                        flathub::stored_merged(&ctx.http, slugs),
+                        flathub::merged_fresh(&ctx.http, slugs),
+                        flathub::merged(&ctx.http, slugs),
+                    )
+                    .await;
+                }
+                Chart::Category(id) => match categories::get(id).and_then(|c| c.flathub) {
+                    Some(slug) => {
+                        show_chart(
+                            &slot,
+                            &ctx,
+                            &nav,
+                            flathub::stored_category(&ctx.http, slug),
+                            flathub::category_fresh(&ctx.http, slug),
+                            flathub::category(&ctx.http, slug),
+                        )
+                        .await;
+                    }
+                    None => {
+                        let query = categories::title(id);
+                        show_chart(
+                            &slot,
+                            &ctx,
+                            &nav,
+                            flathub::stored_search(&ctx.http, &query),
+                            flathub::search_fresh(&ctx.http, &query),
+                            flathub::search(&ctx.http, &query),
+                        )
+                        .await;
+                    }
+                },
             }
         });
     })
@@ -235,17 +340,28 @@ fn search(ctx: &Rc<Ctx>, nav: &Nav, query: &str) -> Page {
             .build();
         column.append(&slot);
         let query = query.clone();
+        let local_empty = local.is_empty();
         glib::spawn_future_local(async move {
+            let stored = flathub::stored_search(&ctx.http, &query);
+            let fresh = flathub::search_fresh(&ctx.http, &query);
+            if let Some(hits) = &stored {
+                paint_search(&slot, &ctx, &nav, hits, local_empty);
+            } else {
+                slot.append(&widgets::loading(&tr("Loading…")));
+            }
+            if fresh && stored.is_some() {
+                return;
+            }
             match flathub::search(&ctx.http, &query).await {
-                Ok(hits) if !hits.is_empty() => {
-                    slot.append(&widgets::section(&tr("Flathub"), None));
-                    let block = hit_list(&ctx, &nav, &hits, 40, false);
-                    slot.append(&block);
-                    widgets::flush_pictures(&block, &ctx.http);
+                Ok(hits) if stored.as_ref().is_some_and(|saved| same_hits(saved, &hits)) => {}
+                Ok(hits) => paint_search(&slot, &ctx, &nav, &hits, local_empty),
+                Err(err) if stored.is_some() => {
+                    let _ = err;
                 }
-                Ok(_) if local.is_empty() => slot.append(&widgets::note(&tr("No matching apps."))),
-                Ok(_) => {}
-                Err(err) => slot.append(&widgets::note(&err)),
+                Err(err) => {
+                    clear_box(&slot);
+                    slot.append(&widgets::note(&err));
+                }
             }
         });
     })
@@ -333,6 +449,7 @@ fn app_page(ctx: &Rc<Ctx>, nav: &Nav, id: &AppId) -> Page {
             .spacing(12)
             .build();
         column.append(&slot);
+        slot.append(&widgets::loading(&tr("Loading…")));
         let nav = nav.clone();
         glib::spawn_future_local(async move {
             let built = match &id {
@@ -342,6 +459,7 @@ fn app_page(ctx: &Rc<Ctx>, nav: &Nav, id: &AppId) -> Page {
                 },
                 AppId::AppImage(iid) | AppId::FlatpakRef(iid) => {
                     let Some(app) = ctx.catalog.borrow().curated(iid).cloned() else {
+                        clear_box(&slot);
                         return slot
                             .append(&widgets::note(&tr("This app is no longer in the catalog.")));
                     };
@@ -363,6 +481,7 @@ fn app_page(ctx: &Rc<Ctx>, nav: &Nav, id: &AppId) -> Page {
                     ))
                 }
             };
+            clear_box(&slot);
             match built {
                 Ok(view) => {
                     slot.append(&view);
@@ -405,8 +524,14 @@ fn updates(ctx: &Rc<Ctx>, nav: &Nav) -> Page {
                 .spacing(12)
                 .build();
             column.append(&slot);
+            slot.append(&widgets::loading(&tr("Checking for updates…")));
             glib::spawn_future_local(async move {
-                ctx.refresh_installed().await;
+                if let Err(err) = ctx.refresh_updates().await {
+                    clear_box(&slot);
+                    slot.append(&widgets::note(&err));
+                    return;
+                }
+                clear_box(&slot);
                 let installed = ctx.installed.borrow().clone();
                 let mut cards: Vec<gtk::Widget> = Vec::new();
                 for (id, version) in &installed.updates {
@@ -469,53 +594,31 @@ fn installed(ctx: &Rc<Ctx>, nav: &Nav) -> Page {
             .spacing(4)
             .build();
         column.append(&slot);
+        let known = ctx.installed.borrow().clone();
+        if known.flatpaks.is_empty() && known.images.is_empty() {
+            slot.append(&widgets::loading(&tr("Loading…")));
+        } else {
+            paint_installed(&slot, &ctx, &nav, &known);
+        }
+        let before = known.revision();
+        let had_apps = !known.flatpaks.is_empty() || !known.images.is_empty();
         glib::spawn_future_local(async move {
             ctx.refresh_installed().await;
             let installed = ctx.installed.borrow().clone();
+            if installed.revision() == before && had_apps {
+                return;
+            }
+            clear_box(&slot);
             if installed.flatpaks.is_empty() && installed.images.is_empty() {
                 slot.append(&widgets::note(&tr("Nothing is installed yet.")));
                 return;
             }
-            let mut briefs = Vec::new();
-            for (id, app) in &installed.flatpaks {
-                briefs.push(Brief {
-                    id: AppId::Flathub(id.clone()),
-                    name: app.name.clone(),
-                    summary: app.version.clone(),
-                    icon: String::new(),
-                    developer: String::new(),
-                    version: app.version.clone(),
-                    download: String::new(),
-                });
-            }
-            for (id, app) in &installed.images {
-                let mut brief = ctx
-                    .catalog
-                    .borrow()
-                    .curated(id)
-                    .cloned()
-                    .map(|a| brief_from_curated(&ctx, &a))
-                    .unwrap_or(Brief {
-                        id: AppId::AppImage(id.clone()),
-                        name: app.name.clone(),
-                        summary: String::new(),
-                        icon: String::new(),
-                        developer: String::new(),
-                        version: app.version.clone(),
-                        download: String::new(),
-                    });
-                brief.summary = app.version.clone();
-                briefs.push(brief);
-            }
-            briefs.sort_by_key(|a| a.name.to_lowercase());
-            let block = brief_list(&ctx, &nav, &briefs, false);
-            slot.append(&block);
-            widgets::flush_pictures(&block, &ctx.http);
+            paint_installed(&slot, &ctx, &nav, &installed);
         });
     })
 }
 
-async fn append_ranking(
+fn append_ranking(
     slot: &gtk::Box,
     ctx: &Rc<Ctx>,
     nav: &Nav,
@@ -539,21 +642,223 @@ async fn append_ranking(
     }
 }
 
+/// Paint a saved list, or a spinner when there is no copy yet.
+/// Returns whether a refresh should still run.
+fn begin_ranking(
+    slot: &gtk::Box,
+    ctx: &Rc<Ctx>,
+    nav: &Nav,
+    title: &str,
+    more: Route,
+    stored: Option<Vec<Hit>>,
+    fresh: bool,
+) -> bool {
+    if let Some(hits) = stored {
+        append_ranking(slot, ctx, nav, title, Ok(hits), more);
+        !fresh
+    } else {
+        slot.append(&widgets::loading(&tr("Loading…")));
+        true
+    }
+}
+
+/// Replace the section when a newer list arrives. A failed refresh leaves
+/// the list `begin_ranking` already painted.
+async fn finish_ranking(
+    slot: &gtk::Box,
+    ctx: &Rc<Ctx>,
+    nav: &Nav,
+    title: &str,
+    more: Route,
+    stored: Option<Vec<Hit>>,
+    fetch: impl std::future::Future<Output = Result<Vec<Hit>, String>>,
+) {
+    match fetch.await {
+        Ok(hits) if stored.as_ref().is_some_and(|saved| same_hits(saved, &hits)) => {}
+        Ok(hits) => {
+            clear_box(slot);
+            append_ranking(slot, ctx, nav, title, Ok(hits), more);
+        }
+        Err(err) => {
+            if stored.is_none() {
+                clear_box(slot);
+                slot.append(&widgets::note(&err));
+            }
+        }
+    }
+}
+
+struct SavedList<F> {
+    stored: Option<Vec<Hit>>,
+    fresh: bool,
+    fetch: F,
+}
+
+async fn show_ranking(
+    slot: &gtk::Box,
+    ctx: &Rc<Ctx>,
+    nav: &Nav,
+    title: &str,
+    more: Route,
+    list: SavedList<impl std::future::Future<Output = Result<Vec<Hit>, String>>>,
+) {
+    if begin_ranking(
+        slot,
+        ctx,
+        nav,
+        title,
+        more.clone(),
+        list.stored.clone(),
+        list.fresh,
+    ) {
+        finish_ranking(slot, ctx, nav, title, more, list.stored, list.fetch).await;
+    }
+}
+
+async fn show_chart(
+    slot: &gtk::Box,
+    ctx: &Rc<Ctx>,
+    nav: &Nav,
+    stored: Option<Vec<Hit>>,
+    fresh: bool,
+    fetch: impl std::future::Future<Output = Result<Vec<Hit>, String>>,
+) {
+    if let Some(hits) = &stored {
+        paint_chart(slot, ctx, nav, hits);
+    } else {
+        slot.append(&widgets::loading(&tr("Loading…")));
+    }
+    if fresh && stored.is_some() {
+        return;
+    }
+    match fetch.await {
+        Ok(hits) if stored.as_ref().is_some_and(|saved| same_hits(saved, &hits)) => {}
+        Ok(hits) => paint_chart(slot, ctx, nav, &hits),
+        Err(err) => {
+            if stored.is_none() {
+                clear_box(slot);
+                slot.append(&widgets::note(&err));
+            }
+        }
+    }
+}
+
+fn paint_chart(slot: &gtk::Box, ctx: &Rc<Ctx>, nav: &Nav, hits: &[Hit]) {
+    clear_box(slot);
+    if hits.is_empty() {
+        return;
+    }
+    let block = hit_list(ctx, nav, hits, 60, true);
+    slot.append(&block);
+    widgets::flush_pictures(&block, &ctx.http);
+}
+
+fn paint_search(slot: &gtk::Box, ctx: &Rc<Ctx>, nav: &Nav, hits: &[Hit], local_empty: bool) {
+    clear_box(slot);
+    if hits.is_empty() {
+        if local_empty {
+            slot.append(&widgets::note(&tr("No matching apps.")));
+        }
+        return;
+    }
+    slot.append(&widgets::section(&tr("Flathub"), None));
+    let block = hit_list(ctx, nav, hits, 40, false);
+    slot.append(&block);
+    widgets::flush_pictures(&block, &ctx.http);
+}
+
+fn paint_installed(
+    slot: &gtk::Box,
+    ctx: &Rc<Ctx>,
+    nav: &Nav,
+    installed: &crate::installed::Installed,
+) {
+    let mut briefs = Vec::new();
+    for (id, app) in &installed.flatpaks {
+        briefs.push(Brief {
+            id: AppId::Flathub(id.clone()),
+            name: app.name.clone(),
+            summary: app.version.clone(),
+            icon: String::new(),
+            developer: String::new(),
+            version: app.version.clone(),
+            download: String::new(),
+        });
+    }
+    for (id, app) in &installed.images {
+        let mut brief = ctx
+            .catalog
+            .borrow()
+            .curated(id)
+            .cloned()
+            .map(|a| brief_from_curated(ctx, &a))
+            .unwrap_or(Brief {
+                id: AppId::AppImage(id.clone()),
+                name: app.name.clone(),
+                summary: String::new(),
+                icon: String::new(),
+                developer: String::new(),
+                version: app.version.clone(),
+                download: String::new(),
+            });
+        brief.summary = app.version.clone();
+        briefs.push(brief);
+    }
+    briefs.sort_by_key(|a| a.name.to_lowercase());
+    let block = brief_list(ctx, nav, &briefs, false);
+    slot.append(&block);
+    widgets::flush_pictures(&block, &ctx.http);
+}
+
+fn same_hits(saved: &[Hit], fresh: &[Hit]) -> bool {
+    saved.len() == fresh.len()
+        && saved
+            .iter()
+            .zip(fresh)
+            .all(|(a, b)| a.app_id == b.app_id && a.name == b.name)
+}
+
+fn clear_box(slot: &gtk::Box) {
+    while let Some(child) = slot.first_child() {
+        slot.remove(&child);
+    }
+}
+
 async fn append_rails(slot: &gtk::Box, ctx: &Rc<Ctx>, nav: &Nav, surface: &str) {
     let rails: Vec<Rail> = model::rails_for(&ctx.catalog.borrow().rails, surface)
         .into_iter()
         .cloned()
         .collect();
+    let waiting = rails_need_network(ctx, &rails);
+    if waiting {
+        slot.append(&widgets::loading(&tr("Loading…")));
+    }
+    let mut blocks: Vec<gtk::Widget> = Vec::new();
     for rail in rails {
         let briefs = resolve_ids(ctx, &rail.apps).await;
         if briefs.is_empty() {
             continue;
         }
-        slot.append(&widgets::section(&rail.title, None));
+        blocks.push(widgets::section(&rail.title, None).upcast());
         let block = brief_list(ctx, nav, &briefs, false);
-        slot.append(&block);
         widgets::flush_pictures(&block, &ctx.http);
+        blocks.push(block.upcast());
     }
+    if waiting {
+        clear_box(slot);
+    }
+    for block in blocks {
+        slot.append(&block);
+    }
+}
+
+fn rails_need_network(ctx: &Ctx, rails: &[Rail]) -> bool {
+    rails.iter().any(|rail| {
+        rail.apps.iter().any(|raw| match AppId::parse(raw) {
+            AppId::Flathub(id) => !flathub::detail_fresh(&ctx.http, &id),
+            AppId::AppImage(_) | AppId::FlatpakRef(_) => false,
+        })
+    })
 }
 
 fn append_stories(column: &gtk::Box, catalog: &crate::catalog::Catalog, surface: &str, nav: &Nav) {

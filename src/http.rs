@@ -56,31 +56,67 @@ impl Http {
                     return Ok(hit);
                 }
             }
-            let message = soup::Message::new(&method, &url).map_err(|e| e.to_string())?;
-            if let Some(body) = &body {
-                message.set_request_body_from_bytes(
-                    Some("application/json"),
-                    Some(&glib::Bytes::from(body.as_bytes())),
-                );
+            let fetched = fetch(&session, &method, &url, body.as_deref()).await;
+            match fetched {
+                Ok(vec) => {
+                    if ttl_secs > 0 {
+                        write_cache(&path, &vec);
+                    }
+                    Ok(vec)
+                }
+                Err(err) => {
+                    // A failed refresh keeps the last copy. The page can
+                    // stay on what it already showed.
+                    if ttl_secs > 0 {
+                        if let Some(stale) = read_stored(&path) {
+                            return Ok(stale);
+                        }
+                    }
+                    Err(err)
+                }
             }
-            let bytes = session
-                .send_and_read_future(&message, glib::Priority::DEFAULT)
-                .await
-                .map_err(|e| e.to_string())?;
-            let code = message.status_code();
-            if !(200..300).contains(&code) {
-                return Err(format!("HTTP {code} for {url}"));
-            }
-            let vec = bytes.to_vec();
-            if ttl_secs > 0 {
-                write_cache(&path, &vec);
-            }
-            Ok(vec)
         }
+    }
+
+    /// The last body saved for this request, including one past its usual age.
+    pub fn stored(&self, method: &str, url: &str, body: Option<&str>) -> Option<Vec<u8>> {
+        read_stored(&self.dir.join(cache_key(method, url, body)))
+    }
+
+    /// True when `stored` is still inside `ttl_secs`.
+    pub fn fresh(&self, method: &str, url: &str, body: Option<&str>, ttl_secs: u64) -> bool {
+        if ttl_secs == 0 {
+            return false;
+        }
+        read_cache(&self.dir.join(cache_key(method, url, body)), ttl_secs).is_some()
     }
 }
 
-fn cache_dir() -> PathBuf {
+async fn fetch(
+    session: &soup::Session,
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let message = soup::Message::new(method, url).map_err(|e| e.to_string())?;
+    if let Some(body) = body {
+        message.set_request_body_from_bytes(
+            Some("application/json"),
+            Some(&glib::Bytes::from(body.as_bytes())),
+        );
+    }
+    let bytes = session
+        .send_and_read_future(&message, glib::Priority::DEFAULT)
+        .await
+        .map_err(|e| e.to_string())?;
+    let code = message.status_code();
+    if !(200..300).contains(&code) {
+        return Err(format!("HTTP {code} for {url}"));
+    }
+    Ok(bytes.to_vec())
+}
+
+pub(crate) fn cache_dir() -> PathBuf {
     glib::user_cache_dir().join("elavo-app-bay")
 }
 
@@ -107,7 +143,16 @@ fn read_cache(path: &std::path::Path, ttl_secs: u64) -> Option<Vec<u8>> {
     if now.saturating_sub(written) > ttl_secs {
         return None;
     }
-    std::fs::read(path).ok()
+    read_stored(path)
+}
+
+fn read_stored(path: &std::path::Path) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.is_empty() {
+        None
+    } else {
+        Some(bytes)
+    }
 }
 
 fn write_cache(path: &std::path::Path, bytes: &[u8]) {
