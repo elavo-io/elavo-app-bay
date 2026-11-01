@@ -189,7 +189,7 @@ fn category_page(ctx: &Rc<Ctx>, nav: &Nav, id: &str) -> Page {
         append_stories(column, &catalog, &id, &nav);
         let curated = curated_in(&ctx, |app| app.categories.iter().any(|c| c == &id));
         if !curated.is_empty() {
-            column.append(&widgets::section(&tr("From Elavo"), None));
+            column.append(&widgets::section(&tr("Curated for Elavo"), None));
             let block = brief_list(&ctx, &nav, &curated, false);
             column.append(&block);
             widgets::flush_pictures(&block, &ctx.http);
@@ -329,7 +329,7 @@ fn search(ctx: &Rc<Ctx>, nav: &Nav, query: &str) -> Page {
     widgets::page(&title, None, move |column| {
         let local = local_matches(&ctx, &query);
         if !local.is_empty() {
-            column.append(&widgets::section(&tr("From Elavo"), None));
+            column.append(&widgets::section(&tr("Curated for Elavo"), None));
             let block = brief_list(&ctx, &nav, &local, false);
             column.append(&block);
             widgets::flush_pictures(&block, &ctx.http);

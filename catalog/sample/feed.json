@@ -50,7 +50,7 @@
     },
     {
       "id": "create-picks",
-      "title": "From the catalog",
+      "title": "Recommended by Elavo",
       "surface": "create",
       "apps": ["appimage:sample-player"]
     }

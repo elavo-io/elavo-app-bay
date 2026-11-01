@@ -34,21 +34,29 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new() -> Rc<Self> {
+        let http = Http::new();
+        let catalog = if Catalog::remote_base().is_empty() {
+            Catalog::from_env()
+        } else {
+            stored_remote(&http).unwrap_or_else(Catalog::from_env)
+        };
         Rc::new(Self {
-            catalog: RefCell::new(Catalog::from_env()),
-            http: Http::new(),
+            catalog: RefCell::new(catalog),
+            http,
             installed: RefCell::new(Installed::read_index()),
         })
     }
 
+    /// Fetch the Elavo catalog on every launch. The saved copy is shown
+    /// immediately and kept when elavo.io does not answer.
     pub async fn refresh_remote(&self) {
         let base = Catalog::remote_base();
         if base.is_empty() {
             return;
         }
-        let feed = self.http.get(&format!("{base}/feed.json"), 60 * 60);
-        let images = self.http.get(&format!("{base}/appimages.json"), 60 * 60);
-        let refs = self.http.get(&format!("{base}/flatpakrefs.json"), 60 * 60);
+        let feed = self.http.get_latest(&format!("{base}/feed.json"));
+        let images = self.http.get_latest(&format!("{base}/appimages.json"));
+        let refs = self.http.get_latest(&format!("{base}/flatpakrefs.json"));
         let (feed, images, refs) = (feed.await, images.await, refs.await);
         let (Ok(feed), Ok(images), Ok(refs)) = (feed, images, refs) else {
             return;
@@ -96,4 +104,15 @@ impl Ctx {
             .map(|a| (a.id.clone(), a.version.clone()))
             .collect()
     }
+}
+
+fn stored_remote(http: &Http) -> Option<Catalog> {
+    let base = Catalog::remote_base();
+    if base.is_empty() {
+        return None;
+    }
+    let feed = http.stored("GET", &format!("{base}/feed.json"), None)?;
+    let images = http.stored("GET", &format!("{base}/appimages.json"), None)?;
+    let refs = http.stored("GET", &format!("{base}/flatpakrefs.json"), None)?;
+    Catalog::from_parts(&base, &feed, &images, &refs).ok()
 }

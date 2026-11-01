@@ -259,25 +259,37 @@ pub fn offer_label(offer: Offer) -> String {
     }
 }
 
-pub fn icon_picture(size: i32) -> gtk::Picture {
-    gtk::Picture::builder()
+/// A square icon slot. The pixel size is the widget's size, so a 256px file
+/// draws at the same size as a 128px one. The frame clips it to the rounded
+/// square; the image alone would keep its own corners.
+pub fn icon_picture(size: i32) -> gtk::Box {
+    let image = gtk::Image::builder()
+        .pixel_size(size)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    let slot = gtk::Box::builder()
         .width_request(size)
         .height_request(size)
-        .content_fit(gtk::ContentFit::Cover)
+        .halign(gtk::Align::Start)
+        .valign(gtk::Align::Center)
+        .overflow(gtk::Overflow::Hidden)
         .css_classes(["bay-icon"])
-        .build()
+        .build();
+    slot.append(&image);
+    slot
 }
 
-pub fn load_picture(http: &Http, picture: &gtk::Picture, url: &str) {
+pub fn load_picture(http: &Http, widget: &impl IsA<gtk::Widget>, url: &str) {
     if url.is_empty() {
         return;
     }
+    let widget = widget.upcast_ref::<gtk::Widget>().clone();
     if let Some(path) = local_path(url) {
-        picture.set_filename(Some(&path));
+        show_file(&widget, &path);
         return;
     }
     let http = http.clone();
-    let picture = picture.clone();
     let url = url.to_owned();
     glib::spawn_future_local(async move {
         let Ok(bytes) = http.get(&url, 24 * 60 * 60).await else {
@@ -285,20 +297,46 @@ pub fn load_picture(http: &Http, picture: &gtk::Picture, url: &str) {
         };
         let gbytes = glib::Bytes::from(&bytes);
         if let Ok(texture) = gdk::Texture::from_bytes(&gbytes) {
-            picture.set_paintable(Some(&texture));
+            show_paintable(&widget, &texture);
         }
     });
 }
 
-/// Remember the URL on the picture. Call `flush_pictures` once an `Http` exists.
-fn load_picture_later(picture: &gtk::Picture, url: &str) {
+/// Remember the URL on the widget. Call `flush_pictures` once an `Http` exists.
+fn load_picture_later(widget: &impl IsA<gtk::Widget>, url: &str) {
+    let widget = widget.upcast_ref::<gtk::Widget>();
     if let Some(path) = local_path(url) {
-        picture.set_filename(Some(&path));
+        show_file(widget, &path);
         return;
     }
     unsafe {
-        picture.set_data("bay-url", Rc::new(url.to_owned()));
+        widget.set_data("bay-url", Rc::new(url.to_owned()));
     }
+}
+
+fn show_file(widget: &gtk::Widget, path: &str) {
+    if let Some(picture) = widget.downcast_ref::<gtk::Picture>() {
+        picture.set_filename(Some(path));
+    } else if let Some(image) = icon_image(widget) {
+        image.set_from_file(Some(path));
+    }
+}
+
+fn show_paintable(widget: &gtk::Widget, texture: &gdk::Texture) {
+    if let Some(picture) = widget.downcast_ref::<gtk::Picture>() {
+        picture.set_paintable(Some(texture));
+    } else if let Some(image) = icon_image(widget) {
+        image.set_paintable(Some(texture));
+    }
+}
+
+fn icon_image(widget: &gtk::Widget) -> Option<gtk::Image> {
+    if let Some(image) = widget.downcast_ref::<gtk::Image>() {
+        return Some(image.clone());
+    }
+    widget
+        .first_child()
+        .and_then(|child| child.downcast::<gtk::Image>().ok())
 }
 
 pub fn flush_pictures(root: &impl IsA<gtk::Widget>, http: &Http) {
@@ -307,16 +345,14 @@ pub fn flush_pictures(root: &impl IsA<gtk::Widget>, http: &Http) {
 }
 
 fn walk(widget: &gtk::Widget, http: &Http) {
-    if let Some(picture) = widget.downcast_ref::<gtk::Picture>() {
-        let url = unsafe {
-            picture
-                .data::<Rc<String>>("bay-url")
-                .map(|p| p.as_ref().clone())
-        };
-        if let Some(url) = url {
-            unsafe { picture.set_data("bay-url", Rc::new(String::new())) };
-            load_picture(http, picture, &url);
-        }
+    let url = unsafe {
+        widget
+            .data::<Rc<String>>("bay-url")
+            .map(|p| p.as_ref().clone())
+    };
+    if let Some(url) = url.filter(|url| !url.is_empty()) {
+        unsafe { widget.set_data("bay-url", Rc::new(String::new())) };
+        load_picture(http, widget, &url);
     }
     let mut child = widget.first_child();
     while let Some(next) = child {

@@ -39,6 +39,26 @@ impl Http {
         self.request("POST", url, Some(body.to_owned()), ttl_secs)
     }
 
+    /// Always ask the network, then save the body. A failure returns the last
+    /// saved body so a catalog page can stay up when elavo.io does not answer.
+    pub fn get_latest(
+        &self,
+        url: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, String>> + 'static {
+        let session = self.session.clone();
+        let path = self.dir.join(cache_key("GET", url, None));
+        let url = url.to_owned();
+        async move {
+            match fetch(&session, "GET", &url, None).await {
+                Ok(bytes) => {
+                    write_cache(&path, &bytes);
+                    Ok(bytes)
+                }
+                Err(err) => read_stored(&path).ok_or(err),
+            }
+        }
+    }
+
     fn request(
         &self,
         method: &str,
