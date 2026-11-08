@@ -8,9 +8,15 @@ use crate::catalog::Catalog;
 use crate::http::Http;
 use crate::installed::Installed;
 use crate::model::{AppId, Offer};
+use crate::task::{self, BeginError, Job, JobKind, Jobs, Phase};
 
 thread_local! {
     static ON_INSTALLED: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+struct Watch {
+    id: u64,
+    hook: Rc<dyn Fn()>,
 }
 
 /// The window registers this so the Updates badge follows a finished check.
@@ -30,6 +36,9 @@ pub struct Ctx {
     pub catalog: RefCell<Catalog>,
     pub http: Http,
     pub installed: RefCell<Installed>,
+    jobs: RefCell<Jobs>,
+    watches: RefCell<Vec<Watch>>,
+    next_watch: std::cell::Cell<u64>,
 }
 
 impl Ctx {
@@ -44,6 +53,9 @@ impl Ctx {
             catalog: RefCell::new(catalog),
             http,
             installed: RefCell::new(Installed::read_index()),
+            jobs: RefCell::default(),
+            watches: RefCell::default(),
+            next_watch: std::cell::Cell::new(1),
         })
     }
 
@@ -91,18 +103,96 @@ impl Ctx {
         Ok(())
     }
 
-    pub fn offer(&self, id: &AppId, version: &str) -> Offer {
-        self.installed.borrow().offer(id, version)
+    pub fn offer(&self, id: &AppId, version: &str, download: &str, update: &str) -> Offer {
+        self.installed.borrow().offer(id, version, download, update)
     }
 
-    pub fn catalog_versions(&self) -> HashMap<String, String> {
+    /// AppImage id to `(version, download, update provider)`.
+    pub fn catalog_listings(&self) -> HashMap<String, (String, String, String)> {
         self.catalog
             .borrow()
             .apps
             .iter()
             .filter(|a| a.source != "flatpakref")
-            .map(|a| (a.id.clone(), a.version.clone()))
+            .map(|a| {
+                (
+                    a.id.clone(),
+                    (a.version.clone(), a.download.clone(), a.update.clone()),
+                )
+            })
             .collect()
+    }
+
+    pub fn job(&self, key: &str) -> Option<Job> {
+        self.jobs.borrow().get(key).cloned()
+    }
+
+    /// Runs `hook` now and whenever a job changes. The id removes it.
+    pub fn watch_jobs(&self, hook: impl Fn() + 'static) -> u64 {
+        let hook: Rc<dyn Fn()> = Rc::new(hook);
+        hook();
+        let id = self.next_watch.get();
+        self.next_watch.set(id.wrapping_add(1));
+        self.watches.borrow_mut().push(Watch { id, hook });
+        id
+    }
+
+    pub fn unwatch(&self, id: u64) {
+        self.watches.borrow_mut().retain(|watch| watch.id != id);
+    }
+
+    pub fn try_begin(&self, key: &str, kind: JobKind) -> Result<(), BeginError> {
+        let result = self.jobs.borrow_mut().try_begin(key, kind);
+        if result.is_ok() {
+            self.notify_jobs();
+        }
+        result
+    }
+
+    pub fn report(&self, key: &str, phase: Phase, fraction: Option<f64>) {
+        self.jobs.borrow_mut().progress(key, phase, fraction);
+        self.notify_jobs();
+    }
+
+    pub fn fail_job(&self, key: &str, message: impl Into<String>) {
+        self.jobs.borrow_mut().fail(key, message);
+        self.notify_jobs();
+    }
+
+    pub fn follow_job(&self, key: &str, kind: JobKind) {
+        self.jobs.borrow_mut().follow(key, kind);
+        self.notify_jobs();
+    }
+
+    pub fn clear_job(&self, key: &str) {
+        if self.jobs.borrow_mut().clear(key) {
+            self.notify_jobs();
+        }
+    }
+
+    fn notify_jobs(&self) {
+        let hooks: Vec<_> = self
+            .watches
+            .borrow()
+            .iter()
+            .map(|watch| watch.hook.clone())
+            .collect();
+        for hook in hooks {
+            hook();
+        }
+    }
+
+    /// Flatpak succeeded. Refresh what is installed, then the update list.
+    /// A failed update check still drops `id` so a stale offer cannot remain.
+    pub async fn settle_flatpak(&self, id: Option<&str>) {
+        self.refresh_installed().await;
+        if self.refresh_updates().await.is_err() {
+            let mut next = self.installed.borrow().clone();
+            next.updates = task::settle_updates(&next.updates, id, Err(()));
+            next.save();
+            *self.installed.borrow_mut() = next;
+            notify_installed();
+        }
     }
 }
 

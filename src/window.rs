@@ -194,7 +194,7 @@ impl Window {
             .ctx
             .installed
             .borrow()
-            .update_count(&self.ctx.catalog_versions());
+            .update_count(&self.ctx.catalog_listings());
         self.badge.set_label(&n.to_string());
         self.badge.set_visible(n > 0);
     }

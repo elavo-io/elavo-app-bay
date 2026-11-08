@@ -21,7 +21,7 @@ function blank() {
   if (state.section === "rails") {
     return { id: "", title: "", surface: "discover", apps: [] };
   }
-  return { id: "", name: "", summary: "", developer: "", categories: [], icon: "", download: "", version: "", homepage: "" };
+  return { id: "", name: "", summary: "", developer: "", categories: [], icon: "", download: "", update: "", version: "", homepage: "" };
 }
 
 function showStatus(text) {
@@ -150,6 +150,7 @@ function renderForm() {
       field("Developer", item.developer, set("developer")),
       field("Icon", item.icon, set("icon")),
       field("Download", item.download, set("download")),
+      field("Update", item.update, set("update")),
       field("Version", item.version, set("version")),
       field("Homepage", item.homepage, set("homepage")),
     );

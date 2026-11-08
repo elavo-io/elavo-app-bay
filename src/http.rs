@@ -3,8 +3,11 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::path::Path;
+
+use gtk::gio::prelude::InputStreamExtManual;
 use gtk::glib;
-use soup::prelude::SessionExt;
+use soup::prelude::*;
 
 #[derive(Clone)]
 pub struct Http {
@@ -103,6 +106,69 @@ impl Http {
         read_stored(&self.dir.join(cache_key(method, url, body)))
     }
 
+    /// Saves `url` to `dest`. `progress` gets bytes received and the total
+    /// when the server sent one. A failed download removes the partial file.
+    pub async fn download_file(
+        &self,
+        url: &str,
+        dest: &Path,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<(), String> {
+        let message = soup::Message::new("GET", url).map_err(|e| e.to_string())?;
+        let stream = self
+            .session
+            .send_future(&message, glib::Priority::DEFAULT)
+            .await
+            .map_err(|e| e.to_string())?;
+        let code = message.status_code();
+        if !(200..300).contains(&code) {
+            return Err(format!("HTTP {code} for {url}"));
+        }
+        let total = message
+            .response_headers()
+            .map(|headers| headers.content_length())
+            .filter(|n| *n > 0)
+            .map(|n| n as u64);
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let partial = partial_path(dest);
+        let mut file = std::fs::File::create(&partial).map_err(|e| e.to_string())?;
+        let mut got = 0u64;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            match stream.read_future(buf, glib::Priority::DEFAULT).await {
+                Ok((next, 0)) => {
+                    drop(next);
+                    break;
+                }
+                Ok((next, n)) => {
+                    if let Err(err) = std::io::Write::write_all(&mut file, &next[..n]) {
+                        let _ = std::fs::remove_file(&partial);
+                        return Err(err.to_string());
+                    }
+                    buf = next;
+                    got += n as u64;
+                    progress(got, total);
+                }
+                Err((_, err)) => {
+                    let _ = std::fs::remove_file(&partial);
+                    return Err(err.to_string());
+                }
+            }
+        }
+        drop(file);
+        if got == 0 {
+            let _ = std::fs::remove_file(&partial);
+            return Err(format!("HTTP {code} for {url} was empty"));
+        }
+        std::fs::rename(&partial, dest).map_err(|e| {
+            let _ = std::fs::remove_file(&partial);
+            e.to_string()
+        })?;
+        Ok(())
+    }
+
     /// True when `stored` is still inside `ttl_secs`.
     pub fn fresh(&self, method: &str, url: &str, body: Option<&str>, ttl_secs: u64) -> bool {
         if ttl_secs == 0 {
@@ -178,6 +244,14 @@ fn read_stored(path: &std::path::Path) -> Option<Vec<u8>> {
 fn write_cache(path: &std::path::Path, bytes: &[u8]) {
     let _ = std::fs::write(path, bytes);
     let _ = std::fs::write(path.with_extension("time"), now_secs().to_string());
+}
+
+fn partial_path(dest: &Path) -> std::path::PathBuf {
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".into());
+    dest.with_file_name(format!(".{name}.partial"))
 }
 
 fn now_secs() -> u64 {

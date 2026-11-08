@@ -35,6 +35,7 @@ impl Hit {
             developer: self.developer.clone(),
             version: String::new(),
             download: String::new(),
+            update: String::new(),
         }
     }
 }
@@ -267,6 +268,7 @@ fn parse_detail(app_id: &str, app: &Value, summary: Option<&Value>) -> Detail {
             developer: text_field(app, "developer_name").unwrap_or_default(),
             version: release_version.clone(),
             download: String::new(),
+            update: String::new(),
         },
         description: app
             .get("description")

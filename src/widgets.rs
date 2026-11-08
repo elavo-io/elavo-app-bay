@@ -14,6 +14,7 @@ thread_local! {
 use crate::http::Http;
 use crate::i18n::tr;
 use crate::model::{Brief, Offer, Story};
+use crate::task::{Job, Phase};
 
 pub struct Page {
     pub scrolled: gtk::ScrolledWindow,
@@ -181,7 +182,7 @@ pub fn story_row(cards: &[gtk::Widget]) -> gtk::Box {
     row
 }
 
-pub fn app_row(brief: &Brief, numbered: Option<usize>, button: &gtk::Button) -> gtk::Box {
+pub fn app_row(brief: &Brief, numbered: Option<usize>, button: &impl IsA<gtk::Widget>) -> gtk::Box {
     let row = gtk::Box::builder()
         .spacing(12)
         .css_classes(["bay-row"])
@@ -243,12 +244,138 @@ pub fn columns(rows: &[gtk::Widget]) -> gtk::Grid {
     grid
 }
 
-pub fn pill(label: &str) -> gtk::Button {
-    gtk::Button::builder()
-        .label(label)
-        .css_classes(["pill"])
-        .valign(gtk::Align::Center)
-        .build()
+/// The Get / Open / Update control, with a bar under the pill while work
+/// is running and the failure in words when it stops.
+pub struct ActionControl {
+    pub root: gtk::Box,
+    button: gtk::Button,
+    label: gtk::Label,
+    bar: gtk::ProgressBar,
+    error: gtk::Label,
+    pulse: RefCell<Option<glib::SourceId>>,
+}
+
+impl ActionControl {
+    pub fn new(text: &str) -> Self {
+        let label = gtk::Label::builder().label(text).build();
+        let button = gtk::Button::builder()
+            .child(&label)
+            .css_classes(["pill"])
+            .valign(gtk::Align::Center)
+            .build();
+        let bar = gtk::ProgressBar::builder()
+            .valign(gtk::Align::Center)
+            .width_request(112)
+            .visible(false)
+            .build();
+        bar.set_pulse_step(0.08);
+        let error = gtk::Label::builder()
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .justify(gtk::Justification::Center)
+            .max_width_chars(22)
+            .visible(false)
+            .css_classes(["bay-action-error"])
+            .build();
+        let root = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
+            .css_classes(["bay-action"])
+            .build();
+        root.append(&button);
+        root.append(&bar);
+        root.append(&error);
+        Self {
+            root,
+            button,
+            label,
+            bar,
+            error,
+            pulse: RefCell::new(None),
+        }
+    }
+
+    pub fn connect_clicked(&self, f: impl Fn(&gtk::Button) + 'static) {
+        self.button.connect_clicked(f);
+    }
+
+    pub fn show_offer(&self, offer: Offer) {
+        self.stop_pulse();
+        self.bar.set_visible(false);
+        self.bar.set_fraction(0.0);
+        self.error.set_visible(false);
+        self.label.set_label(&offer_label(offer));
+        self.button.remove_css_class("failed");
+        self.button.set_tooltip_text(None);
+    }
+
+    pub fn show_job(&self, job: &Job) {
+        match job {
+            Job::Working {
+                phase, fraction, ..
+            } => {
+                self.error.set_visible(false);
+                self.button.remove_css_class("failed");
+                self.button.set_tooltip_text(None);
+                self.label.set_label(&working_text(*phase, *fraction));
+                self.bar.set_visible(true);
+                if let Some(fraction) = fraction {
+                    self.stop_pulse();
+                    self.bar.set_fraction(*fraction);
+                } else if self.pulse.borrow().is_none() {
+                    let bar = self.bar.clone();
+                    let id =
+                        glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                            bar.pulse();
+                            glib::ControlFlow::Continue
+                        });
+                    *self.pulse.borrow_mut() = Some(id);
+                }
+            }
+            Job::Failed { message } => {
+                self.stop_pulse();
+                self.bar.set_visible(false);
+                self.label.set_label(&tr("Try Again"));
+                self.button.add_css_class("failed");
+                self.error.set_label(message);
+                self.error.set_visible(true);
+                self.button.set_tooltip_text(Some(message));
+            }
+        }
+    }
+
+    fn stop_pulse(&self) {
+        if let Some(id) = self.pulse.borrow_mut().take() {
+            id.remove();
+        }
+    }
+}
+
+impl Drop for ActionControl {
+    fn drop(&mut self) {
+        self.stop_pulse();
+    }
+}
+
+pub fn working_text(phase: Phase, fraction: Option<f64>) -> String {
+    let name = match phase {
+        Phase::Preparing => tr("Preparing…"),
+        Phase::Waiting => tr("Waiting…"),
+        Phase::Downloading => tr("Downloading…"),
+        Phase::Installing => tr("Installing…"),
+        Phase::Updating => tr("Updating…"),
+        Phase::Finishing => tr("Finishing…"),
+    };
+    match fraction {
+        Some(fraction) => {
+            let percent = (fraction.clamp(0.0, 1.0) * 100.0).round() as i32;
+            let name = name.trim_end_matches('…');
+            format!("{name} {percent}%")
+        }
+        None => name,
+    }
 }
 
 pub fn offer_label(offer: Offer) -> String {

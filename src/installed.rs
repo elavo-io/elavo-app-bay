@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::http;
 use crate::model::{AppId, Offer};
 use crate::process;
+use crate::task::{self, ImagePlan};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Installed {
@@ -23,6 +24,9 @@ pub struct FlatpakApp {
     pub name: String,
     pub version: String,
     pub scope: String,
+    /// The remote the app was installed from, such as `flathub`.
+    #[serde(default)]
+    pub origin: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -30,6 +34,12 @@ pub struct ImageApp {
     pub name: String,
     pub version: String,
     pub path: PathBuf,
+    /// File name of the AppImage inside `path`.
+    #[serde(default)]
+    pub source: String,
+    /// Embedded AppImage update information, when the file has any.
+    #[serde(default)]
+    pub update_info: String,
 }
 
 impl Installed {
@@ -98,7 +108,7 @@ impl Installed {
         let mut flatpaks: Vec<_> = self
             .flatpaks
             .iter()
-            .map(|(id, app)| format!("{id}\t{}\t{}", app.name, app.version))
+            .map(|(id, app)| format!("{id}\t{}\t{}\t{}", app.name, app.version, app.scope))
             .collect();
         flatpaks.sort();
         let mut images: Vec<_> = self
@@ -121,7 +131,7 @@ impl Installed {
         )
     }
 
-    pub fn offer(&self, id: &AppId, catalog_version: &str) -> Offer {
+    pub fn offer(&self, id: &AppId, catalog_version: &str, download: &str, update: &str) -> Offer {
         match id {
             AppId::Flathub(fid) | AppId::FlatpakRef(fid) => {
                 if self.updates.contains_key(fid) {
@@ -133,26 +143,51 @@ impl Installed {
                 }
             }
             AppId::AppImage(iid) => match self.images.get(iid) {
-                Some(app)
-                    if !catalog_version.is_empty()
-                        && app.version != catalog_version
-                        && !app.version.is_empty() =>
-                {
-                    Offer::Update
-                }
-                Some(_) => Offer::Open,
+                Some(app) => match task::image_plan(
+                    &app.version,
+                    catalog_version,
+                    download,
+                    update,
+                    &app.update_info,
+                ) {
+                    ImagePlan::Ready(_) => Offer::Update,
+                    _ => Offer::Open,
+                },
                 None => Offer::Get,
             },
         }
     }
 
-    pub fn update_count(&self, catalog_versions: &HashMap<String, String>) -> u32 {
+    pub fn image_plan_for(
+        &self,
+        id: &str,
+        catalog_version: &str,
+        download: &str,
+        update: &str,
+    ) -> ImagePlan {
+        let Some(app) = self.images.get(id) else {
+            return ImagePlan::NotInstalled;
+        };
+        task::image_plan(
+            &app.version,
+            catalog_version,
+            download,
+            update,
+            &app.update_info,
+        )
+    }
+
+    pub fn update_count(&self, listings: &HashMap<String, (String, String, String)>) -> u32 {
         let mut n = self.updates.len() as u32;
         for (id, app) in &self.images {
-            if let Some(version) = catalog_versions.get(id) {
-                if !version.is_empty() && !app.version.is_empty() && app.version != *version {
-                    n += 1;
-                }
+            let Some((version, download, update)) = listings.get(id) else {
+                continue;
+            };
+            if matches!(
+                task::image_plan(&app.version, version, download, update, &app.update_info),
+                ImagePlan::Ready(_)
+            ) {
+                n += 1;
             }
         }
         n
@@ -170,7 +205,7 @@ fn parse_flatpaks(text: &str) -> HashMap<String, FlatpakApp> {
         let Some(id) = cols.next() else { continue };
         let name = cols.next().unwrap_or(id);
         let version = cols.next().unwrap_or("");
-        let _origin = cols.next();
+        let origin = cols.next().unwrap_or("");
         let scope = cols.next().unwrap_or("system");
         if id.is_empty() {
             continue;
@@ -181,6 +216,7 @@ fn parse_flatpaks(text: &str) -> HashMap<String, FlatpakApp> {
                 name: name.to_owned(),
                 version: version.to_owned(),
                 scope: scope.to_owned(),
+                origin: origin.to_owned(),
             },
         );
     }
@@ -192,6 +228,15 @@ fn applications_dirs() -> Vec<PathBuf> {
         gtk::glib::home_dir().join("Applications"),
         PathBuf::from("/Applications"),
     ]
+}
+
+fn appimage_in(dir: &std::path::Path) -> Option<PathBuf> {
+    let read = std::fs::read_dir(dir).ok()?;
+    read.flatten().map(|entry| entry.path()).find(|path| {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("appimage"))
+    })
 }
 
 fn scan_images(dirs: &[PathBuf], into: &mut HashMap<String, ImageApp>) {
@@ -218,12 +263,24 @@ fn scan_images(dirs: &[PathBuf], into: &mut HashMap<String, ImageApp>) {
             };
             let name = value.get("name").and_then(|v| v.as_str()).unwrap_or(id);
             let version = value.get("version").and_then(|v| v.as_str()).unwrap_or("");
+            let source = value.get("source").and_then(|v| v.as_str()).unwrap_or("");
+            let image = if source.is_empty() {
+                appimage_in(&path)
+            } else {
+                Some(path.join(source))
+            };
+            let update_info = image
+                .as_ref()
+                .and_then(|file| task::read_update_info(file))
+                .unwrap_or_default();
             into.insert(
                 id.to_owned(),
                 ImageApp {
                     name: name.to_owned(),
                     version: version.to_owned(),
                     path,
+                    source: source.to_owned(),
+                    update_info,
                 },
             );
         }
@@ -243,6 +300,7 @@ mod tests {
                 name: "GIMP".into(),
                 version: "3.0".into(),
                 scope: "system".into(),
+                origin: "flathub".into(),
             },
         );
         installed
@@ -259,6 +317,45 @@ mod tests {
     fn flatpak_list_rows_keep_the_installation() {
         let parsed = parse_flatpaks("org.gimp.GIMP\tGIMP\t3.0\tflathub\tuser\n");
         assert_eq!(parsed["org.gimp.GIMP"].scope, "user");
+        assert_eq!(parsed["org.gimp.GIMP"].origin, "flathub");
         assert_eq!(parsed["org.gimp.GIMP"].name, "GIMP");
+    }
+
+    #[test]
+    fn an_appimage_without_update_information_is_not_an_update() {
+        let mut installed = Installed::default();
+        installed.images.insert(
+            "demo".into(),
+            ImageApp {
+                name: "Demo".into(),
+                version: "1".into(),
+                path: PathBuf::from("/tmp/Demo.eapp"),
+                source: "demo.AppImage".into(),
+                update_info: String::new(),
+            },
+        );
+        assert_eq!(
+            installed.offer(&AppId::AppImage("demo".into()), "2", "", ""),
+            Offer::Open
+        );
+        assert_eq!(
+            installed.offer(
+                &AppId::AppImage("demo".into()),
+                "2",
+                "https://example.com/demo.AppImage",
+                ""
+            ),
+            Offer::Update
+        );
+        let mut listings = HashMap::new();
+        listings.insert(
+            "demo".into(),
+            (
+                "2".into(),
+                "https://example.com/demo.AppImage".into(),
+                String::new(),
+            ),
+        );
+        assert_eq!(installed.update_count(&listings), 1);
     }
 }

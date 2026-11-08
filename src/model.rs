@@ -103,6 +103,11 @@ pub struct Curated {
     /// Download URL for an AppImage, or the flatpakref URL.
     #[serde(default)]
     pub download: String,
+    /// Update provider for an AppImage: `zsync|https://…`, a GitHub
+    /// `gh-releases-zsync|…` string, or a `.zsync` URL. Empty when the
+    /// listing has none. A newer `version` by itself is not an update.
+    #[serde(default)]
+    pub update: String,
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -131,6 +136,8 @@ pub struct Brief {
     pub developer: String,
     pub version: String,
     pub download: String,
+    /// Catalog update provider. Empty for Flathub rows.
+    pub update: String,
 }
 
 /// One editorial surface: Discover, a hub, or a category id.

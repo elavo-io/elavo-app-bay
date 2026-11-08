@@ -153,6 +153,7 @@ mod tests {
         assert!(catalog.stories[0].is_hero());
         assert_eq!(catalog.apps.len(), 2);
         assert_eq!(catalog.apps[0].source, "appimage");
+        assert_eq!(catalog.apps[0].update, "");
         assert_eq!(catalog.apps[1].source, "flatpakref");
         assert!(catalog.resolve("images/a.png").ends_with("images/a.png"));
     }

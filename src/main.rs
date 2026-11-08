@@ -11,6 +11,7 @@ mod model;
 mod nav;
 mod pages;
 mod process;
+mod task;
 mod text;
 mod widgets;
 mod window;

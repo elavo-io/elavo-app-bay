@@ -185,6 +185,34 @@ button.pill:hover {
   background-color: alpha(currentColor, 0.16);
 }
 
+.bay-action {
+  min-width: 132px;
+}
+
+.bay-action button.pill {
+  min-width: 132px;
+}
+
+.bay-action progressbar trough,
+.bay-action progressbar progress {
+  min-height: 4px;
+  border-radius: 999px;
+}
+
+.bay-action progressbar progress {
+  background-color: var(--accent-bg-color, @accent_bg_color);
+  border-color: var(--accent-bg-color, @accent_bg_color);
+}
+
+.bay-action-error {
+  font-size: 12px;
+  color: @error_color;
+}
+
+button.pill.failed {
+  background-color: alpha(@error_color, 0.16);
+}
+
 button.linkish {
   color: var(--accent-bg-color, @accent_bg_color);
 }
