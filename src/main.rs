@@ -7,6 +7,7 @@ mod http;
 mod i18n;
 mod install;
 mod installed;
+mod launch;
 mod model;
 mod nav;
 mod pages;

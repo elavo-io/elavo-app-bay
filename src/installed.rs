@@ -2,7 +2,7 @@
 //! Applications folders.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -223,6 +223,36 @@ fn parse_flatpaks(text: &str) -> HashMap<String, FlatpakApp> {
     flatpaks
 }
 
+/// The icon an `.eapp` bundle carries, if any.
+pub fn bundle_icon(bundle: &Path) -> Option<PathBuf> {
+    ["icon.png", "icon.svg", "standard-icon.png"]
+        .iter()
+        .map(|name| bundle.join(name))
+        .find(|path| path.is_file())
+}
+
+/// The icon an installed Flatpak exports, the user installation first.
+pub fn flatpak_icon(id: &str) -> Option<PathBuf> {
+    let bases = [
+        gtk::glib::user_data_dir().join("flatpak/exports/share/icons/hicolor"),
+        PathBuf::from("/var/lib/flatpak/exports/share/icons/hicolor"),
+    ];
+    bases.iter().find_map(|base| {
+        flatpak_icon_names(id)
+            .into_iter()
+            .map(|name| base.join(name))
+            .find(|path| path.is_file())
+    })
+}
+
+fn flatpak_icon_names(id: &str) -> Vec<String> {
+    let mut names = vec![format!("scalable/apps/{id}.svg")];
+    names.extend(
+        ["512x512", "256x256", "128x128", "64x64"].map(|size| format!("{size}/apps/{id}.png")),
+    );
+    names
+}
+
 fn applications_dirs() -> Vec<PathBuf> {
     vec![
         gtk::glib::home_dir().join("Applications"),
@@ -311,6 +341,25 @@ mod tests {
         assert_eq!(back.flatpaks["org.gimp.GIMP"].version, "3.0");
         assert_eq!(back.updates["org.gimp.GIMP"], "3.0.2");
         assert_eq!(installed.revision(), back.revision());
+    }
+
+    #[test]
+    fn a_bundle_icon_is_found_in_order() {
+        let dir = std::env::temp_dir().join(format!("app-bay-icon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(bundle_icon(&dir), None);
+        std::fs::write(dir.join("standard-icon.png"), b"png").unwrap();
+        assert_eq!(bundle_icon(&dir), Some(dir.join("standard-icon.png")));
+        std::fs::write(dir.join("icon.svg"), b"svg").unwrap();
+        assert_eq!(bundle_icon(&dir), Some(dir.join("icon.svg")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn flatpak_icons_prefer_scalable_then_large() {
+        let names = flatpak_icon_names("org.gimp.GIMP");
+        assert_eq!(names[0], "scalable/apps/org.gimp.GIMP.svg");
+        assert_eq!(names[1], "512x512/apps/org.gimp.GIMP.png");
     }
 
     #[test]

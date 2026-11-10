@@ -1,4 +1,6 @@
 //! One instance. The menubar is exported for the panel and not drawn.
+//! `--app ID` given to a second launch opens that app's page in the window
+//! that is already open.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -8,6 +10,8 @@ use gtk::{gdk, gio, glib};
 
 use crate::context::Ctx;
 use crate::i18n::tr;
+use crate::launch;
+use crate::model::AppId;
 use crate::nav::Route;
 use crate::window::Window;
 
@@ -18,11 +22,12 @@ thread_local! {
 pub fn run() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("Usage: elavo-app-bay");
+        println!("{}", launch::USAGE);
         return glib::ExitCode::SUCCESS;
     }
     let app = gtk::Application::builder()
         .application_id(crate::APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
     app.connect_startup(|app| {
         follow_color_scheme();
@@ -30,6 +35,7 @@ pub fn run() -> glib::ExitCode {
         app.set_menubar(Some(&menubar()));
     });
     app.connect_activate(activate);
+    app.connect_command_line(command_line);
     let discover = gio::SimpleAction::new("discover", None);
     discover.connect_activate(|_, _| {
         if let Some(window) = WINDOW.with(|w| w.borrow().clone()) {
@@ -38,6 +44,22 @@ pub fn run() -> glib::ExitCode {
     });
     app.add_action(&discover);
     app.run()
+}
+
+/// Runs in the open instance, for its own launch and for each later one.
+fn command_line(app: &gtk::Application, line: &gio::ApplicationCommandLine) -> glib::ExitCode {
+    let args: Vec<String> = line
+        .arguments()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    activate(app);
+    if let Some(raw) = launch::app_arg(&args) {
+        if let Some(window) = WINDOW.with(|w| w.borrow().clone()) {
+            window.nav().go(Route::App(AppId::parse(&raw)));
+        }
+    }
+    glib::ExitCode::SUCCESS
 }
 
 fn activate(app: &gtk::Application) {

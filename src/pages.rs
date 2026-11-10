@@ -10,6 +10,8 @@ use crate::context::Ctx;
 use crate::flathub::{self, Detail, Hit};
 use crate::i18n::tr;
 use crate::install;
+use crate::installed;
+use crate::launch::{self, PageSource};
 use crate::model::{self, AppId, Brief, Offer, Rail};
 use crate::nav::{Chart, Nav, Route};
 use crate::task::{self, BeginError, ImagePlan, Job, JobKind, Phase};
@@ -436,12 +438,26 @@ fn app_page(ctx: &Rc<Ctx>, nav: &Nav, id: &AppId) -> Page {
     let nav = nav.clone();
     let id = id.clone();
     let placeholder = match &id {
-        AppId::Flathub(fid) => fid.clone(),
+        AppId::Flathub(fid) => ctx
+            .installed
+            .borrow()
+            .flatpaks
+            .get(fid)
+            .map(|a| a.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| fid.clone()),
         AppId::AppImage(iid) | AppId::FlatpakRef(iid) => ctx
             .catalog
             .borrow()
             .curated(iid)
             .map(|a| a.name.clone())
+            .or_else(|| {
+                ctx.installed
+                    .borrow()
+                    .images
+                    .get(iid)
+                    .map(|a| a.name.clone())
+            })
             .unwrap_or_else(|| iid.clone()),
     };
     widgets::page(&placeholder, None, move |column| {
@@ -453,16 +469,26 @@ fn app_page(ctx: &Rc<Ctx>, nav: &Nav, id: &AppId) -> Page {
         slot.append(&widgets::loading(&tr("Loading…")));
         let nav = nav.clone();
         glib::spawn_future_local(async move {
-            let built = match &id {
-                AppId::Flathub(fid) => match flathub::detail(&ctx.http, fid).await {
-                    Ok(detail) => Ok(detail_view(&ctx, &nav, &detail)),
-                    Err(err) => Err(err),
-                },
+            let in_catalog = match &id {
+                AppId::Flathub(_) => false,
                 AppId::AppImage(iid) | AppId::FlatpakRef(iid) => {
+                    ctx.catalog.borrow().curated(iid).is_some()
+                }
+            };
+            let source = launch::page_source(&id, in_catalog, &ctx.installed.borrow());
+            let built = match (source, &id) {
+                (PageSource::Flathub, AppId::Flathub(fid)) => {
+                    match flathub::detail(&ctx.http, fid).await {
+                        Ok(detail) => Ok(detail_view(&ctx, &nav, &detail)),
+                        Err(err) => local_detail(&ctx, &id)
+                            .map(|detail| detail_view(&ctx, &nav, &detail))
+                            .ok_or(err),
+                    }
+                }
+                (PageSource::Catalog, AppId::AppImage(iid) | AppId::FlatpakRef(iid)) => {
                     let Some(app) = ctx.catalog.borrow().curated(iid).cloned() else {
                         clear_box(&slot);
-                        return slot
-                            .append(&widgets::note(&tr("This app is no longer in the catalog.")));
+                        return slot.append(&widgets::note(&missing()));
                     };
                     let brief = brief_from_curated(&ctx, &app);
                     Ok(detail_view(
@@ -481,6 +507,10 @@ fn app_page(ctx: &Rc<Ctx>, nav: &Nav, id: &AppId) -> Page {
                         },
                     ))
                 }
+                (PageSource::Local, _) => local_detail(&ctx, &id)
+                    .map(|detail| detail_view(&ctx, &nav, &detail))
+                    .ok_or_else(missing),
+                _ => Err(missing()),
             };
             clear_box(&slot);
             match built {
@@ -492,6 +522,71 @@ fn app_page(ctx: &Rc<Ctx>, nav: &Nav, id: &AppId) -> Page {
                 Err(err) => slot.append(&widgets::note(&err)),
             }
         });
+    })
+}
+
+fn missing() -> String {
+    tr("This app is no longer in the catalog.")
+}
+
+/// A page for an app App Bay has no listing for, from what is installed:
+/// its name, icon, and version, with Open and Uninstall. A Flatpak that
+/// Flathub has an update for also offers Update. An AppImage outside the
+/// catalog has no version to compare against, so it never offers one.
+fn local_detail(ctx: &Rc<Ctx>, id: &AppId) -> Option<Detail> {
+    let installed = ctx.installed.borrow();
+    let (name, version, icon, summary) = match id {
+        AppId::AppImage(iid) => {
+            let app = installed.images.get(iid)?;
+            (
+                app.name.clone(),
+                app.version.clone(),
+                installed::bundle_icon(&app.path),
+                tr("Installed in your Applications folder. App Bay does not list it."),
+            )
+        }
+        AppId::Flathub(fid) => {
+            let app = installed.flatpaks.get(fid)?;
+            let summary = if app.origin.is_empty() || app.origin == "flathub" {
+                tr("Installed on this computer. Flathub's details are not available right now.")
+            } else {
+                format!("{} {}", tr("Installed from"), app.origin)
+            };
+            (
+                app.name.clone(),
+                app.version.clone(),
+                installed::flatpak_icon(fid),
+                summary,
+            )
+        }
+        AppId::FlatpakRef(_) => return None,
+    };
+    let developer = if version.is_empty() {
+        String::new()
+    } else {
+        format!("{} {}", tr("Version"), version)
+    };
+    Some(Detail {
+        brief: Brief {
+            id: id.clone(),
+            name,
+            summary,
+            icon: icon
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            developer,
+            version: String::new(),
+            download: String::new(),
+            update: String::new(),
+        },
+        description: String::new(),
+        homepage: String::new(),
+        screenshots: Vec::new(),
+        release_version: String::new(),
+        release_date: String::new(),
+        release_notes: String::new(),
+        download_size: None,
+        permissions: Vec::new(),
     })
 }
 
@@ -1389,7 +1484,9 @@ fn detail_view(ctx: &Rc<Ctx>, nav: &Nav, detail: &Detail) -> gtk::Box {
         .orientation(gtk::Orientation::Vertical)
         .spacing(14)
         .build();
-    let header = gtk::Box::builder().spacing(16).build();
+    // The icon expands inside its slot. Without this the header takes that
+    // up and floats a short page's header to the middle of the window.
+    let header = gtk::Box::builder().spacing(16).vexpand(false).build();
     let icon = widgets::icon_picture(88);
     widgets::load_picture(&ctx.http, &icon, &brief.icon);
     header.append(&icon);
