@@ -1,12 +1,15 @@
 /* App Bay. Colors come from the GTK theme. Shape and spacing are ours. */
 
+/* The sidebar column is one surface. The window-button band has no fill of
+   its own, so the theme's header fill and bottom rule cannot split it. */
 .settings-sidebar {
   background-color: alpha(currentColor, 0.04);
 }
 
-headerbar.settings-sidebar-bar {
-  background-color: alpha(currentColor, 0.04);
-  background-image: none;
+.settings-sidebar-bar {
+  min-height: 48px;
+  padding: 0 10px;
+  background: none;
   border: none;
   box-shadow: none;
 }
