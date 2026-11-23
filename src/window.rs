@@ -243,6 +243,16 @@ impl Window {
                     }
                 }
             },
+            {
+                let weak = weak.clone();
+                move |route| {
+                    if let Some(w) = weak.upgrade() {
+                        if *w.current.borrow() != route {
+                            w.drop_page(&route);
+                        }
+                    }
+                }
+            },
         ));
 
         let weak = Rc::downgrade(self);

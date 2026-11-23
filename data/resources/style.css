@@ -212,6 +212,12 @@ button.pill:hover {
   color: @error_color;
 }
 
+button.bay-action-cancel {
+  font-size: 12px;
+  min-height: 0;
+  padding: 0 6px;
+}
+
 button.pill.failed {
   background-color: alpha(@error_color, 0.16);
 }

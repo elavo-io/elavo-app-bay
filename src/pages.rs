@@ -14,7 +14,7 @@ use crate::installed;
 use crate::launch::{self, PageSource};
 use crate::model::{self, AppId, Brief, Offer, Rail};
 use crate::nav::{Chart, Nav, Route};
-use crate::task::{self, BeginError, ImagePlan, Job, JobKind, Phase};
+use crate::task::{self, ImagePlan, Job, JobKind, Phase};
 use crate::text::{self, Permission};
 use crate::widgets::{self, Page};
 
@@ -602,23 +602,31 @@ fn updates(ctx: &Rc<Ctx>, nav: &Nav) -> Page {
     update_all.connect_clicked(move |button| {
         let ctx = ctx_button.clone();
         let nav = nav_button.clone();
-        match ctx.try_begin(ALL_JOB, JobKind::Flatpak) {
-            Ok(()) => {}
-            Err(BeginError::Duplicate) => return,
-            Err(BeginError::FlatpakBusy) => {
-                ctx.fail_job(ALL_JOB, tr("Another install or update is already running."));
+        match ctx.job(ALL_JOB) {
+            Some(Job::Queued { .. }) => {
+                ctx.cancel_job(ALL_JOB);
                 return;
             }
+            Some(Job::Working { .. }) => return,
+            _ => {}
         }
-        button.set_label(&tr("Updating…"));
-        glib::spawn_future_local(async move {
-            let err = update_everything(&ctx).await.err();
+        let shown = button.downgrade();
+        let run_ctx = ctx.clone();
+        let _ = ctx.enqueue(ALL_JOB, JobKind::Flatpak, move || async move {
+            let err = update_everything(&run_ctx).await.err();
             if let Some(err) = err {
-                ctx.fail_job(ALL_JOB, err);
+                run_ctx.fail_job(ALL_JOB, err);
             } else {
-                ctx.clear_job(ALL_JOB);
+                run_ctx.clear_job(ALL_JOB);
             }
-            nav.go(Route::Updates);
+            // Reload the list when it is on screen. A queue that finishes
+            // while someone is on another page leaves them there, and the
+            // list is built fresh on their next visit.
+            if shown.upgrade().is_some_and(|button| button.is_mapped()) {
+                nav.go(Route::Updates);
+            } else {
+                nav.forget(Route::Updates);
+            }
         });
     });
     let ctx_all = ctx.clone();
@@ -628,10 +636,15 @@ fn updates(ctx: &Rc<Ctx>, nav: &Nav) -> Page {
             return;
         };
         match ctx_all.job(ALL_JOB) {
+            Some(Job::Queued { .. }) => {
+                button.set_label(&tr("Queued"));
+                button.set_tooltip_text(Some(&tr("Click to take Update All out of the queue.")));
+            }
             Some(Job::Working {
                 phase, fraction, ..
             }) => {
                 button.set_label(&widgets::working_text(phase, fraction));
+                button.set_tooltip_text(None);
             }
             Some(Job::Failed { message }) => {
                 button.set_label(&tr("Try Again"));
@@ -1087,8 +1100,12 @@ fn action_button(ctx: &Rc<Ctx>, brief: Brief) -> gtk::Box {
         let Some(control) = weak.upgrade() else {
             return;
         };
-        if let Some(job) = ctx_watch.job(&brief_watch.id.key()) {
+        let key = brief_watch.id.key();
+        if let Some(job) = ctx_watch.job(&key) {
             control.show_job(&job);
+            if let Some(place) = ctx_watch.queue_position(&key) {
+                control.show_place(place);
+            }
         } else {
             control.show_offer(ctx_watch.offer(
                 &brief_watch.id,
@@ -1113,8 +1130,13 @@ fn action_button(ctx: &Rc<Ctx>, brief: Brief) -> gtk::Box {
             }
         });
     let ctx_click = ctx.clone();
+    let key_cancel = brief.id.key();
     let brief_click = brief;
     control.connect_clicked(move |_| on_action(&ctx_click, &brief_click));
+    let ctx_cancel = ctx.clone();
+    control.connect_cancel(move |_| {
+        ctx_cancel.cancel_job(&key_cancel);
+    });
     control.root.clone()
 }
 
@@ -1131,7 +1153,10 @@ fn next_control_id() -> u64 {
 
 fn on_action(ctx: &Rc<Ctx>, brief: &Brief) {
     let key = brief.id.key();
-    if matches!(ctx.job(&key), Some(Job::Working { .. })) {
+    if matches!(
+        ctx.job(&key),
+        Some(Job::Working { .. } | Job::Queued { .. })
+    ) {
         return;
     }
     let offer = ctx.offer(&brief.id, &brief.version, &brief.download, &brief.update);
@@ -1148,17 +1173,12 @@ fn on_action(ctx: &Rc<Ctx>, brief: &Brief) {
     } else {
         JobKind::Flatpak
     };
-    match ctx.try_begin(&key, kind) {
-        Ok(()) => {}
-        Err(BeginError::Duplicate) => return,
-        Err(BeginError::FlatpakBusy) => {
-            ctx.fail_job(&key, tr("Another install or update is already running."));
-            return;
-        }
-    }
-    let ctx = ctx.clone();
+    let run_ctx = ctx.clone();
     let brief = brief.clone();
-    glib::spawn_future_local(async move {
+    // Another app's install or update may be running. This one waits its
+    // turn in the queue instead of failing as busy.
+    let _ = ctx.enqueue(&key, kind, move || async move {
+        let ctx = run_ctx;
         let key = brief.id.key();
         let ctx_report = ctx.clone();
         let key_report = key.clone();
@@ -1374,9 +1394,14 @@ async fn update_everything(ctx: &Rc<Ctx>) -> Result<(), String> {
     }
     for (id, brief) in images {
         let key = brief.id.key();
-        if ctx.try_begin(&key, JobKind::Image).is_err() {
+        // An AppImage already waiting for its own turn keeps it.
+        if matches!(
+            ctx.job(&key),
+            Some(Job::Working { .. } | Job::Queued { .. })
+        ) {
             continue;
         }
+        ctx.follow_job(&key, JobKind::Image);
         let mut report = {
             let ctx = ctx.clone();
             let key = key.clone();

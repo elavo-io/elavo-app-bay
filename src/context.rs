@@ -1,8 +1,12 @@
 //! Shared catalog, HTTP, and the list of what is installed.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::rc::Rc;
+
+use gtk::glib;
 
 use crate::catalog::Catalog;
 use crate::http::Http;
@@ -13,6 +17,10 @@ use crate::task::{self, BeginError, Job, JobKind, Jobs, Phase};
 thread_local! {
     static ON_INSTALLED: RefCell<Option<Rc<dyn Fn()>>> = const { RefCell::new(None) };
 }
+
+/// The work behind one queued job. It reports its own result with
+/// `clear_job` or `fail_job` before it returns.
+type Runner = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()>>>>;
 
 struct Watch {
     id: u64,
@@ -37,6 +45,8 @@ pub struct Ctx {
     pub http: Http,
     pub installed: RefCell<Installed>,
     jobs: RefCell<Jobs>,
+    runners: RefCell<HashMap<String, Runner>>,
+    pumping: Cell<bool>,
     watches: RefCell<Vec<Watch>>,
     next_watch: std::cell::Cell<u64>,
 }
@@ -54,6 +64,8 @@ impl Ctx {
             http,
             installed: RefCell::new(Installed::read_index()),
             jobs: RefCell::default(),
+            runners: RefCell::default(),
+            pumping: Cell::new(false),
             watches: RefCell::default(),
             next_watch: std::cell::Cell::new(1),
         })
@@ -141,12 +153,64 @@ impl Ctx {
         self.watches.borrow_mut().retain(|watch| watch.id != id);
     }
 
-    pub fn try_begin(&self, key: &str, kind: JobKind) -> Result<(), BeginError> {
-        let result = self.jobs.borrow_mut().try_begin(key, kind);
-        if result.is_ok() {
+    /// Puts `run` in the install and update queue under `key`. It starts
+    /// at once when nothing else is running, or waits its turn. The queue
+    /// belongs to the app session, so moving between pages keeps it.
+    pub fn enqueue<F, Fut>(
+        self: &Rc<Self>,
+        key: &str,
+        kind: JobKind,
+        run: F,
+    ) -> Result<(), BeginError>
+    where
+        F: FnOnce() -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        self.jobs.borrow_mut().enqueue(key, kind)?;
+        let runner: Runner = Box::new(move || Box::pin(run()));
+        self.runners.borrow_mut().insert(key.to_owned(), runner);
+        self.notify_jobs();
+        self.pump();
+        Ok(())
+    }
+
+    /// Place in line counting from 1, for a job that has not started.
+    pub fn queue_position(&self, key: &str) -> Option<usize> {
+        self.jobs.borrow().position(key)
+    }
+
+    /// Takes a job that has not started out of the queue.
+    pub fn cancel_job(&self, key: &str) -> bool {
+        let cancelled = self.jobs.borrow_mut().cancel(key);
+        if cancelled {
+            self.runners.borrow_mut().remove(key);
             self.notify_jobs();
         }
-        result
+        cancelled
+    }
+
+    /// Runs queued jobs one after another until the queue is empty.
+    fn pump(self: &Rc<Self>) {
+        if self.pumping.get() {
+            return;
+        }
+        self.pumping.set(true);
+        let ctx = self.clone();
+        glib::spawn_future_local(async move {
+            loop {
+                let Some(key) = ctx.jobs.borrow_mut().start_next() else {
+                    break;
+                };
+                let runner = ctx.runners.borrow_mut().remove(&key);
+                ctx.notify_jobs();
+                if let Some(runner) = runner {
+                    runner().await;
+                }
+                ctx.jobs.borrow_mut().finish(&key);
+                ctx.notify_jobs();
+            }
+            ctx.pumping.set(false);
+        });
     }
 
     pub fn report(&self, key: &str, phase: Phase, fraction: Option<f64>) {

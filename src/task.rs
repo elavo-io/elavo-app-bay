@@ -2,7 +2,7 @@
 //! anything: Flatpak command lines, progress lines, and whether an AppImage
 //! has a real update provider.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -32,6 +32,10 @@ pub enum JobKind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Job {
+    /// Waiting its turn behind the running job. It can still be cancelled.
+    Queued {
+        kind: JobKind,
+    },
     Working {
         phase: Phase,
         fraction: Option<f64>,
@@ -44,15 +48,19 @@ pub enum Job {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BeginError {
-    /// This app already has a command running.
+    /// This app is already running or waiting in the queue.
     Duplicate,
-    /// Flatpak runs one transaction at a time.
-    FlatpakBusy,
 }
 
+/// Installs and updates run one at a time, in the order they were asked
+/// for. Flatpak's system installation takes one transaction at a time, so
+/// a second click waits in the queue instead of failing as busy. A failed
+/// job only marks its own app; the next one still starts.
 #[derive(Clone, Debug, Default)]
 pub struct Jobs {
     map: HashMap<String, Job>,
+    queue: VecDeque<String>,
+    active: Option<String>,
 }
 
 impl Jobs {
@@ -64,36 +72,85 @@ impl Jobs {
         matches!(self.map.get(key), Some(Job::Working { .. }))
     }
 
-    pub fn flatpak_busy(&self) -> bool {
-        self.map.values().any(|job| {
-            matches!(
-                job,
-                Job::Working {
-                    kind: JobKind::Flatpak,
-                    ..
-                }
-            )
-        })
+    pub fn queued(&self, key: &str) -> bool {
+        matches!(self.map.get(key), Some(Job::Queued { .. }))
     }
 
-    /// Starts `key` unless that app, or another Flatpak transaction, is
-    /// already running. A failed job can be started again.
-    pub fn try_begin(&mut self, key: &str, kind: JobKind) -> Result<(), BeginError> {
-        if self.working(key) {
+    /// Running or waiting. A failed job is neither and can be asked again.
+    pub fn busy(&self, key: &str) -> bool {
+        self.working(key) || self.queued(key)
+    }
+
+    /// The job the queue is running now.
+    #[cfg(test)]
+    pub fn running(&self) -> Option<&str> {
+        self.active.as_deref()
+    }
+
+    /// Place in line counting from 1, for a job that has not started.
+    pub fn position(&self, key: &str) -> Option<usize> {
+        self.queue.iter().position(|k| k == key).map(|at| at + 1)
+    }
+
+    #[cfg(test)]
+    pub fn waiting(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Adds `key` to the end of the queue. Only an app that is already
+    /// running or waiting is refused, so nothing is ever turned away as busy.
+    pub fn enqueue(&mut self, key: &str, kind: JobKind) -> Result<(), BeginError> {
+        if self.busy(key) {
             return Err(BeginError::Duplicate);
         }
-        if kind == JobKind::Flatpak && self.flatpak_busy() {
-            return Err(BeginError::FlatpakBusy);
-        }
-        self.map.insert(
-            key.to_owned(),
-            Job::Working {
-                phase: Phase::Preparing,
-                fraction: None,
-                kind,
-            },
-        );
+        self.map.insert(key.to_owned(), Job::Queued { kind });
+        self.queue.push_back(key.to_owned());
         Ok(())
+    }
+
+    /// Starts the next waiting job when nothing is running, and names it.
+    pub fn start_next(&mut self) -> Option<String> {
+        if self.active.is_some() {
+            return None;
+        }
+        while let Some(key) = self.queue.pop_front() {
+            let Some(Job::Queued { kind }) = self.map.get(&key).cloned() else {
+                continue;
+            };
+            self.map.insert(
+                key.clone(),
+                Job::Working {
+                    phase: Phase::Preparing,
+                    fraction: None,
+                    kind,
+                },
+            );
+            self.active = Some(key.clone());
+            return Some(key);
+        }
+        None
+    }
+
+    /// The running job returned. Its own result stays (cleared or failed);
+    /// one that forgot to say is cleared so its button is not stuck.
+    pub fn finish(&mut self, key: &str) {
+        if self.active.as_deref() == Some(key) {
+            self.active = None;
+            if self.working(key) {
+                self.map.remove(key);
+            }
+        }
+    }
+
+    /// Takes a job out of the queue before it starts. A running job cannot
+    /// be cancelled here.
+    pub fn cancel(&mut self, key: &str) -> bool {
+        if !self.queued(key) {
+            return false;
+        }
+        self.queue.retain(|k| k != key);
+        self.map.remove(key);
+        true
     }
 
     pub fn progress(&mut self, key: &str, phase: Phase, fraction: Option<f64>) {
@@ -111,7 +168,11 @@ impl Jobs {
         }
     }
 
+    /// A waiting job keeps its place; only a running or idle one fails.
     pub fn fail(&mut self, key: &str, message: impl Into<String>) {
+        if self.queued(key) {
+            return;
+        }
         self.map.insert(
             key.to_owned(),
             Job::Failed {
@@ -120,14 +181,19 @@ impl Jobs {
         );
     }
 
+    /// A waiting job is only removed by `cancel`.
     pub fn clear(&mut self, key: &str) -> bool {
+        if self.queued(key) {
+            return false;
+        }
         self.map.remove(key).is_some()
     }
 
-    /// Shows `key` as running without taking the Flatpak lock. Update All
-    /// uses this so each app's pill moves while one transaction runs.
+    /// Shows `key` as running inside the current job without a queue slot
+    /// of its own. Update All uses this so each app's pill moves while one
+    /// transaction runs. An app that is waiting for its own turn is left alone.
     pub fn follow(&mut self, key: &str, kind: JobKind) {
-        if self.working(key) {
+        if self.busy(key) {
             return;
         }
         self.map.insert(
@@ -919,24 +985,138 @@ mod tests {
         assert_eq!(read_flatpak_line("Nothing to do."), None);
     }
 
+    const GIMP: &str = "flathub:org.gimp.GIMP";
+    const INKSCAPE: &str = "flathub:org.inkscape.Inkscape";
+    const KRITA: &str = "flathub:org.kde.krita";
+
     #[test]
-    fn repeated_clicks_do_not_start_a_second_flatpak() {
+    fn repeated_clicks_do_not_queue_an_app_twice() {
         let mut jobs = Jobs::default();
-        assert!(jobs
-            .try_begin("flathub:org.gimp.GIMP", JobKind::Flatpak)
-            .is_ok());
+        assert!(jobs.enqueue(GIMP, JobKind::Flatpak).is_ok());
         assert_eq!(
-            jobs.try_begin("flathub:org.gimp.GIMP", JobKind::Flatpak),
+            jobs.enqueue(GIMP, JobKind::Flatpak),
             Err(BeginError::Duplicate)
         );
+        assert_eq!(jobs.start_next().as_deref(), Some(GIMP));
         assert_eq!(
-            jobs.try_begin("flathub:org.inkscape.Inkscape", JobKind::Flatpak),
-            Err(BeginError::FlatpakBusy)
+            jobs.enqueue(GIMP, JobKind::Flatpak),
+            Err(BeginError::Duplicate)
         );
-        jobs.fail("flathub:org.gimp.GIMP", "network");
-        assert!(jobs
-            .try_begin("flathub:org.inkscape.Inkscape", JobKind::Flatpak)
-            .is_ok());
+    }
+
+    #[test]
+    fn a_second_install_waits_instead_of_failing_as_busy() {
+        let mut jobs = Jobs::default();
+        jobs.enqueue(GIMP, JobKind::Flatpak).unwrap();
+        assert_eq!(jobs.start_next().as_deref(), Some(GIMP));
+        assert!(jobs.enqueue(INKSCAPE, JobKind::Flatpak).is_ok());
+        assert!(jobs.enqueue(KRITA, JobKind::Image).is_ok());
+        assert!(jobs.working(GIMP));
+        assert!(jobs.queued(INKSCAPE));
+        assert_eq!(jobs.position(INKSCAPE), Some(1));
+        assert_eq!(jobs.position(KRITA), Some(2));
+        assert_eq!(jobs.waiting(), 2);
+        // Only one runs at a time.
+        assert_eq!(jobs.start_next(), None);
+        assert_eq!(jobs.running(), Some(GIMP));
+    }
+
+    #[test]
+    fn jobs_run_in_the_order_they_were_asked_for() {
+        let mut jobs = Jobs::default();
+        for key in [GIMP, INKSCAPE, KRITA] {
+            jobs.enqueue(key, JobKind::Flatpak).unwrap();
+        }
+        let mut order = Vec::new();
+        while let Some(key) = jobs.start_next() {
+            jobs.progress(&key, Phase::Installing, Some(0.5));
+            assert_eq!(
+                jobs.get(&key),
+                Some(&Job::Working {
+                    phase: Phase::Installing,
+                    fraction: Some(0.5),
+                    kind: JobKind::Flatpak,
+                })
+            );
+            jobs.clear(&key);
+            jobs.finish(&key);
+            order.push(key);
+        }
+        assert_eq!(order, [GIMP, INKSCAPE, KRITA]);
+        assert_eq!(jobs.running(), None);
+        assert_eq!(jobs.waiting(), 0);
+    }
+
+    #[test]
+    fn a_failure_marks_only_its_app_and_the_queue_continues() {
+        let mut jobs = Jobs::default();
+        jobs.enqueue(GIMP, JobKind::Flatpak).unwrap();
+        jobs.enqueue(INKSCAPE, JobKind::Flatpak).unwrap();
+        let first = jobs.start_next().unwrap();
+        jobs.fail(&first, "network");
+        jobs.finish(&first);
+        assert_eq!(
+            jobs.get(GIMP),
+            Some(&Job::Failed {
+                message: "network".into()
+            })
+        );
+        assert!(jobs.queued(INKSCAPE));
+        assert_eq!(jobs.start_next().as_deref(), Some(INKSCAPE));
+        // The failed app can be asked again and waits its turn.
+        assert!(jobs.enqueue(GIMP, JobKind::Flatpak).is_ok());
+        assert!(jobs.queued(GIMP));
+    }
+
+    #[test]
+    fn a_waiting_job_can_be_cancelled_but_a_running_one_cannot() {
+        let mut jobs = Jobs::default();
+        for key in [GIMP, INKSCAPE, KRITA] {
+            jobs.enqueue(key, JobKind::Flatpak).unwrap();
+        }
+        assert_eq!(jobs.start_next().as_deref(), Some(GIMP));
+        assert!(!jobs.cancel(GIMP));
+        assert!(jobs.working(GIMP));
+        assert!(jobs.cancel(INKSCAPE));
+        assert_eq!(jobs.get(INKSCAPE), None);
+        assert_eq!(jobs.position(KRITA), Some(1));
+        assert!(!jobs.cancel(INKSCAPE));
+        jobs.clear(GIMP);
+        jobs.finish(GIMP);
+        assert_eq!(jobs.start_next().as_deref(), Some(KRITA));
+    }
+
+    #[test]
+    fn a_job_that_returns_without_a_result_does_not_stay_running() {
+        let mut jobs = Jobs::default();
+        jobs.enqueue(GIMP, JobKind::Flatpak).unwrap();
+        jobs.start_next();
+        jobs.finish(GIMP);
+        assert_eq!(jobs.get(GIMP), None);
+        // Finishing something that is not the running job changes nothing.
+        jobs.enqueue(INKSCAPE, JobKind::Flatpak).unwrap();
+        jobs.start_next();
+        jobs.finish(GIMP);
+        assert_eq!(jobs.running(), Some(INKSCAPE));
+    }
+
+    #[test]
+    fn update_all_does_not_disturb_an_app_waiting_for_its_own_turn() {
+        let mut jobs = Jobs::default();
+        jobs.enqueue("*all*", JobKind::Flatpak).unwrap();
+        jobs.enqueue(GIMP, JobKind::Flatpak).unwrap();
+        assert_eq!(jobs.start_next().as_deref(), Some("*all*"));
+        jobs.follow(GIMP, JobKind::Flatpak);
+        jobs.follow(INKSCAPE, JobKind::Flatpak);
+        jobs.progress(GIMP, Phase::Updating, Some(0.4));
+        jobs.fail(GIMP, "remote");
+        assert!(!jobs.clear(GIMP));
+        assert!(jobs.queued(GIMP));
+        assert!(jobs.working(INKSCAPE));
+        jobs.clear(INKSCAPE);
+        jobs.clear("*all*");
+        jobs.finish("*all*");
+        assert_eq!(jobs.start_next().as_deref(), Some(GIMP));
     }
 
     #[test]

@@ -142,12 +142,14 @@ impl Chart {
 type Go = Rc<dyn Fn(Route)>;
 type Confirm = Rc<dyn Fn(String, Box<dyn FnOnce()>)>;
 type Retitle = Rc<dyn Fn(String)>;
+type Forget = Rc<dyn Fn(Route)>;
 
 #[derive(Clone)]
 pub struct Nav {
     go: Go,
     confirm: Confirm,
     retitle: Retitle,
+    forget: Forget,
 }
 
 impl Nav {
@@ -155,11 +157,13 @@ impl Nav {
         go: impl Fn(Route) + 'static,
         confirm: impl Fn(String, Box<dyn FnOnce()>) + 'static,
         retitle: impl Fn(String) + 'static,
+        forget: impl Fn(Route) + 'static,
     ) -> Self {
         Self {
             go: Rc::new(go),
             confirm: Rc::new(confirm),
             retitle: Rc::new(retitle),
+            forget: Rc::new(forget),
         }
     }
 
@@ -173,5 +177,11 @@ impl Nav {
 
     pub fn retitle(&self, title: String) {
         (self.retitle)(title);
+    }
+
+    /// Drops the kept copy of a page that is not on screen, so the next
+    /// visit builds it again.
+    pub fn forget(&self, route: Route) {
+        (self.forget)(route);
     }
 }

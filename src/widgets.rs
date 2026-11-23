@@ -245,12 +245,14 @@ pub fn columns(rows: &[gtk::Widget]) -> gtk::Grid {
 }
 
 /// The Get / Open / Update control, with a bar under the pill while work
-/// is running and the failure in words when it stops.
+/// is running, a Cancel link while it waits in the queue, and the failure
+/// in words when it stops.
 pub struct ActionControl {
     pub root: gtk::Box,
     button: gtk::Button,
     label: gtk::Label,
     bar: gtk::ProgressBar,
+    cancel: gtk::Button,
     error: gtk::Label,
     pulse: RefCell<Option<glib::SourceId>>,
 }
@@ -269,6 +271,13 @@ impl ActionControl {
             .visible(false)
             .build();
         bar.set_pulse_step(0.08);
+        let cancel = gtk::Button::builder()
+            .label(tr("Cancel"))
+            .halign(gtk::Align::Center)
+            .visible(false)
+            .tooltip_text(tr("Take this app out of the queue."))
+            .css_classes(["linkish", "flat", "bay-action-cancel"])
+            .build();
         let error = gtk::Label::builder()
             .wrap(true)
             .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -286,12 +295,14 @@ impl ActionControl {
             .build();
         root.append(&button);
         root.append(&bar);
+        root.append(&cancel);
         root.append(&error);
         Self {
             root,
             button,
             label,
             bar,
+            cancel,
             error,
             pulse: RefCell::new(None),
         }
@@ -301,8 +312,23 @@ impl ActionControl {
         self.button.connect_clicked(f);
     }
 
+    /// Says where a waiting app is in line, on hover.
+    pub fn show_place(&self, place: usize) {
+        let text = if place <= 1 {
+            tr("Next in the queue. Starts when the install or update ahead of it is done.")
+        } else {
+            format!("{} {place}", tr("Waiting in the queue: number"))
+        };
+        self.button.set_tooltip_text(Some(&text));
+    }
+
+    pub fn connect_cancel(&self, f: impl Fn(&gtk::Button) + 'static) {
+        self.cancel.connect_clicked(f);
+    }
+
     pub fn show_offer(&self, offer: Offer) {
         self.stop_pulse();
+        self.cancel.set_visible(false);
         self.bar.set_visible(false);
         self.bar.set_fraction(0.0);
         self.error.set_visible(false);
@@ -313,9 +339,22 @@ impl ActionControl {
 
     pub fn show_job(&self, job: &Job) {
         match job {
+            Job::Queued { .. } => {
+                self.stop_pulse();
+                self.bar.set_visible(false);
+                self.bar.set_fraction(0.0);
+                self.error.set_visible(false);
+                self.button.remove_css_class("failed");
+                self.button.set_tooltip_text(Some(&tr(
+                    "Starts when the install or update ahead of it is done.",
+                )));
+                self.label.set_label(&tr("Queued"));
+                self.cancel.set_visible(true);
+            }
             Job::Working {
                 phase, fraction, ..
             } => {
+                self.cancel.set_visible(false);
                 self.error.set_visible(false);
                 self.button.remove_css_class("failed");
                 self.button.set_tooltip_text(None);
@@ -336,6 +375,7 @@ impl ActionControl {
             }
             Job::Failed { message } => {
                 self.stop_pulse();
+                self.cancel.set_visible(false);
                 self.bar.set_visible(false);
                 self.label.set_label(&tr("Try Again"));
                 self.button.add_css_class("failed");
